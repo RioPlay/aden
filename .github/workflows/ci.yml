@@ -17,16 +17,14 @@ jobs:
   platform-contracts:
     name: MCP/path contracts (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        os: [macos-15, windows-2025]
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
 
       - name: Setup Rust 1.90
         uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
@@ -34,80 +32,44 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
-      # Identity hygiene once per OS matrix row is cheap and keeps Windows/macOS
-      # checkouts honest too (author metadata + Cargo authors contract).
-      - name: Maintainer identity hygiene
-        shell: bash
-        env:
-          IDENTITY_FORBIDDEN_PATTERNS: ${{ secrets.IDENTITY_FORBIDDEN_PATTERNS }}
-        run: bash scripts/check-identity-hygiene.sh --all
-
-      # Cross-platform gate: path/MCP contracts plus product CLI/MCP gauntlets.
-      # Catches drive-letter, UNC, separator, install, and argv drift without a
-      # full workspace test matrix on every OS.
-      - name: Test MCP and filesystem contracts
+      # Cross-platform gate: path, filesystem, SQLite locking/WAL, and MCP/CLI
+      # contracts that can diverge on macOS/Windows without re-running the full
+      # OS-agnostic Linux workspace suite.
+      - name: Test OS path, store, and MCP contracts
         shell: bash
         run: |
           set -euo pipefail
           cargo build --locked -p aden-cli -p aden-mcp
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            cargo build --locked -p aden-cli -p aden-mcp --message-format=json |
-              python3 scripts/check_parser_build.py
-          fi
-          # Run every MCP integration test once, against this job's binary.
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             export ADEN_BIN="${GITHUB_WORKSPACE}/target/debug/aden.exe"
           else
             export ADEN_BIN="${GITHUB_WORKSPACE}/target/debug/aden"
           fi
-          cargo test --locked -p aden-core -p aden-mcp -p aden-paths
+          cargo test --locked -p aden-paths -p aden-mcp
 
-      - name: CLI unit and session contention regressions
-        run: cargo test --locked -p aden-cli --bin aden
-
-      - name: Product CLI gauntlet, cli_tests, and regression lock
+      - name: OS CLI path and recovery contracts
         run: >
           cargo test --locked -p aden-cli
-          --test low_friction_gauntlet
-          --test cli_tests
-          --test mcp_antigravity
-          --test regression_lock
-          --test viewer_completeness
-          --test viz_direction
-          --test zero_friction_freshness
-          --test freshness_coherence
           --test freshness_paths
           --test source_read
-          --test result_semantics
-          --test findings
-          --test read_trace
-          --test gen_trace
+          --test mcp_antigravity
+          --test store_recovery
+          --test low_friction_gauntlet
 
-      - name: Verify vendored bytes on each platform
-        shell: bash
-        working-directory: crates/aden-cli/assets
-        run: |
-          set -euo pipefail
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum --check CHECKSUMS
-          else
-            shasum -a 256 --check CHECKSUMS
-          fi
-
-      - name: Shell entry point syntax
-        shell: bash
-        run: |
-          for script in install.sh release/install.sh scripts/*.sh; do
-            bash -n "$script"
-          done
-
-      - name: Verify release installer rollback
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash scripts/test-release-bundle.sh
-
-      - name: Smoke source PowerShell installer
+      - name: Check Windows PowerShell installer syntax
         if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($script in @(".\install.ps1", ".\release\install.ps1")) {
+            foreach ($shellExe in @("pwsh", "powershell.exe")) {
+              & $shellExe -NoProfile -Command "`$err = `$null; `$tok = `$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path '$script'), [ref]`$tok, [ref]`$err); if (`$err -and `$err.Count -gt 0) { `$err | ForEach-Object { Write-Error `$_.Message }; exit 1 }"
+              if ($LASTEXITCODE -ne 0) { throw "$shellExe syntax check failed for $script" }
+            }
+          }
+
+      - name: Smoke source PowerShell installer on push
+        if: runner.os == 'Windows' && github.event_name == 'push'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -129,10 +91,12 @@ jobs:
   build:
     name: Build shipped binaries
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Setup Rust 1.90
         uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
@@ -140,11 +104,28 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
+      - name: Maintainer identity hygiene
+        shell: bash
+        env:
+          IDENTITY_FORBIDDEN_PATTERNS: ${{ secrets.IDENTITY_FORBIDDEN_PATTERNS }}
+        run: bash scripts/check-identity-hygiene.sh --all
+
+      - name: Verify parser build & vendored asset contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p aden-cli -p aden-mcp --message-format=json |
+            python3 scripts/check_parser_build.py
+          (cd crates/aden-cli/assets && sha256sum --check CHECKSUMS)
+          for script in install.sh release/install.sh scripts/*.sh; do
+            bash -n "$script"
+          done
+          bash scripts/test-release-bundle.sh
+
       - name: Build shipped binaries
         run: cargo build --locked --release -p aden-cli -p aden-mcp
 
-      # Keep the complete suite in the existing required status check. Quality
-      # Gate owns lint/features/policy rather than repeating this execution.
+      # Keep the complete workspace regression suite in the required status check.
       - name: Run workspace regression tests
         run: cargo test --locked --workspace --no-fail-fast
 
@@ -170,8 +151,6 @@ jobs:
           target/release/aden ask --human --strict --budget 512 "Where is entry_point?" "$repo" \
             | grep -q 'entry_point'
 
-          # Release-profile product gauntlet (debug gauntlets already run on the
-          # multi-OS platform matrix).
           cargo test --locked --release -p aden-cli --test low_friction_gauntlet -- --nocapture
           ADEN_BIN="${GITHUB_WORKSPACE}/target/release/aden" \
             cargo test --locked --release -p aden-mcp --test mcp_live_gauntlet -- --nocapture
