@@ -1543,7 +1543,8 @@ mod coalesced_doc_tests {
     #[test]
     fn collision_and_flush_across_chunk_boundaries() {
         let path = std::env::temp_dir().join(format!("aden-coalesced-{}", std::process::id()));
-        let storage = Storage::new(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&path);
+        let storage = Storage::new(&path.to_string_lossy()).unwrap();
         let mut batch = CoalescedDocBatch::default();
         batch.push((doc("same"), "first".into()));
         batch.push((doc("same"), "last".into()));
