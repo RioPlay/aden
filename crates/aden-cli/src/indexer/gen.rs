@@ -775,19 +775,22 @@ fn cmd_gen_inner(
                     // (AWS/GitHub/OpenAI/Slack keys, PEM private keys) and refuse to
                     // index such a file into the store, where ask/asm would otherwise
                     // assemble it into LLM context (CWE-798/CWE-200).
-                    let content_disposition = aden_core::filter::FileDisposition::for_content(&source);
-                    if !content_disposition.is_indexed() {
+                    if let Some(secret_match) =
+                        aden_core::filter::detect_high_confidence_secret(&source)
+                    {
                         if !silent {
                             eprintln!(
-                                "WARN: Skipping {} — file content matches a credential pattern (not indexed). Add to .adenignore if intentional.",
-                                src_rel.display()
+                                "WARN: Skipping {}:{} — file content matches credential rule '{}' (not indexed). Add to .adenignore if intentional.",
+                                src_rel.display(),
+                                secret_match.line,
+                                secret_match.rule
                             );
                         }
                         return Some(WorkItem::Excluded {
                             cache_key,
                             source_mtime: mtime_secs,
                             source_path: src_path.to_string_lossy().to_string(),
-                            disposition: content_disposition,
+                            disposition: aden_core::filter::FileDisposition::SecretContent,
                         });
                     }
 
