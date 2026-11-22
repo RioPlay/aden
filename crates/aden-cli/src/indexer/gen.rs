@@ -22,7 +22,7 @@ use crate::util::{
     normalize_sep, sanitize_source_file, save_gen_cache,
 };
 
-const COALESCED_DOC_BATCH_LIMIT: usize = 512;
+const COALESCED_DOC_BATCH_LIMIT: usize = 4096;
 
 #[derive(Default)]
 struct CoalescedDocBatch {

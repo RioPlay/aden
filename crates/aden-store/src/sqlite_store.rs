@@ -315,6 +315,7 @@ fn dir_is_empty(dir: &Path) -> Result<bool, StoreError> {
 fn configure_connection(conn: &Connection, fresh_db: bool) -> Result<(), StoreError> {
     conn.busy_timeout(Duration::from_millis(5000))
         .map_err(map_sqlite_err)?;
+    conn.set_prepared_statement_cache_capacity(64);
     if fresh_db {
         conn.execute_batch(
             "PRAGMA page_size = 4096;\n\
@@ -327,7 +328,8 @@ fn configure_connection(conn: &Connection, fresh_db: bool) -> Result<(), StoreEr
         "PRAGMA journal_mode = WAL;\n\
          PRAGMA synchronous = NORMAL;\n\
          PRAGMA temp_store = MEMORY;\n\
-         PRAGMA cache_size = -16384;\n\
+         PRAGMA cache_size = -32768;\n\
+         PRAGMA wal_autocheckpoint = 4000;\n\
          PRAGMA mmap_size = 0;\n\
          PRAGMA foreign_keys = OFF;",
     )
@@ -386,6 +388,7 @@ fn init_schema(conn: &mut Connection) -> Result<(), StoreError> {
             node_id INTEGER NOT NULL,\n\
             PRIMARY KEY (form, node_id)\n\
          ) WITHOUT ROWID;\n\
+         CREATE INDEX IF NOT EXISTS idx_symbol_exact_node ON symbol_exact (node_id);\n\
          CREATE TABLE IF NOT EXISTS meta (\n\
             key TEXT PRIMARY KEY,\n\
             value TEXT NOT NULL\n\
@@ -394,6 +397,23 @@ fn init_schema(conn: &mut Connection) -> Result<(), StoreError> {
     )
     .map_err(map_sqlite_err)?;
     tx.commit().map_err(map_sqlite_err)?;
+    Ok(())
+}
+
+fn ensure_schema_indexes(conn: &Connection) -> Result<(), StoreError> {
+    let has_idx: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_symbol_exact_node')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(map_sqlite_err)?;
+    if !has_idx {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_symbol_exact_node ON symbol_exact (node_id);",
+        )
+        .map_err(map_sqlite_err)?;
+    }
     Ok(())
 }
 
@@ -517,33 +537,119 @@ enum BaseUpdateMode<'a> {
     ExplicitOverride(&'a str),
 }
 
-fn upsert_document_in_tx(
+fn upsert_document_by_anchor_in_tx(
     tx: &Transaction<'_>,
-    node_id: i64,
     doc: &Document,
     file_cache: &mut HashMap<String, i64>,
     base_mode: BaseUpdateMode<'_>,
 ) -> Result<(), StoreError> {
-    let (old_file_id, new_has_canonical_base): (Option<i64>, i64) = match base_mode {
+    let raw = serialize_document(doc)?;
+    let doc_blob = compress_blob(&raw);
+    let span = effective_source_span(doc);
+    let file_path = span
+        .as_ref()
+        .map(|s| s.file.as_str())
+        .or_else(|| doc.attributes.get("source_file").map(String::as_str));
+    let new_file_id = match file_path {
+        Some(path) if !path.is_empty() => Some(intern_file_cached(tx, path, file_cache)?),
+        _ => None,
+    };
+    let (start_line, end_line, start_byte, end_byte) = match &span {
+        Some(s) => (
+            Some(s.start_line as i64),
+            Some(s.end_line as i64),
+            Some(s.start_byte as i64),
+            Some(s.end_byte as i64),
+        ),
+        None => (None, None, None, None),
+    };
+    let sym = build_symbol_index_data(&doc.anchor);
+    let node_type_code = i64::from(node_type_to_u8(&doc.node_type));
+
+    let existing: Option<(i64, bool, bool, Option<i64>)> = {
+        let mut state_stmt = tx
+            .prepare_cached(
+                "SELECT id, has_doc, has_canonical_base, file_id FROM nodes WHERE anchor = ?1",
+            )
+            .map_err(map_sqlite_err)?;
+        state_stmt
+            .query_row([&doc.anchor], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, i64>(2)? != 0,
+                    r.get(3)?,
+                ))
+            })
+            .optional()
+            .map_err(map_sqlite_err)?
+    };
+
+    let Some((node_id, prev_has_doc, prev_has_canonical_base, old_file_id)) = existing else {
+        // Fast path for brand-new nodes: single INSERT into nodes and zero stale cleanup.
+        let new_has_canonical_base: i64 =
+            i64::from(matches!(base_mode, BaseUpdateMode::CanonicalLazy));
+        {
+            let mut ins_node = tx
+                .prepare_cached(
+                    "INSERT INTO nodes (\
+                        anchor, has_doc, has_canonical_base, node_type, file_id, \
+                        start_line, end_line, start_byte, end_byte, \
+                        segment_lower, leaf_lower, segment_len, leaf_len\
+                     ) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                )
+                .map_err(map_sqlite_err)?;
+            ins_node
+                .execute(params![
+                    &doc.anchor,
+                    new_has_canonical_base,
+                    node_type_code,
+                    new_file_id,
+                    start_line,
+                    end_line,
+                    start_byte,
+                    end_byte,
+                    sym.segment_lower,
+                    sym.leaf_lower,
+                    sym.segment_len as i64,
+                    sym.leaf_len as i64,
+                ])
+                .map_err(map_sqlite_err)?;
+        }
+        let node_id = tx.last_insert_rowid();
+        {
+            let mut ins_body = tx
+                .prepare_cached("INSERT INTO node_bodies (node_id, doc_blob) VALUES (?1, ?2)")
+                .map_err(map_sqlite_err)?;
+            ins_body
+                .execute(params![node_id, doc_blob])
+                .map_err(map_sqlite_err)?;
+        }
+        if let BaseUpdateMode::ExplicitOverride(snapshot) = base_mode {
+            let base_blob = compress_blob(snapshot.as_bytes());
+            let mut ins_base = tx
+                .prepare_cached("INSERT INTO bases (node_id, base_blob) VALUES (?1, ?2)")
+                .map_err(map_sqlite_err)?;
+            ins_base
+                .execute(params![node_id, base_blob])
+                .map_err(map_sqlite_err)?;
+        }
+        {
+            let mut ins_exact = tx
+                .prepare_cached("INSERT INTO symbol_exact (form, node_id) VALUES (?1, ?2)")
+                .map_err(map_sqlite_err)?;
+            for key in &sym.keys {
+                ins_exact
+                    .execute(params![key, node_id])
+                    .map_err(map_sqlite_err)?;
+            }
+        }
+        return Ok(());
+    };
+
+    let new_has_canonical_base: i64 = match base_mode {
         BaseUpdateMode::PreserveExistingCoW => {
-            let (was_canonical, prev_file_id): (bool, Option<i64>) = {
-                let mut state_stmt = tx
-                    .prepare_cached(
-                        "SELECT has_doc, has_canonical_base, file_id FROM nodes WHERE id = ?1",
-                    )
-                    .map_err(map_sqlite_err)?;
-                let (has_doc, has_canon, fid) = state_stmt
-                    .query_row([node_id], |r| {
-                        Ok((
-                            r.get::<_, i64>(0)? != 0,
-                            r.get::<_, i64>(1)? != 0,
-                            r.get::<_, Option<i64>>(2)?,
-                        ))
-                    })
-                    .map_err(map_sqlite_err)?;
-                (has_doc && has_canon, fid)
-            };
-            if was_canonical {
+            if prev_has_doc && prev_has_canonical_base {
                 let has_explicit: bool = {
                     let mut check = tx
                         .prepare_cached("SELECT EXISTS(SELECT 1 FROM bases WHERE node_id = ?1)")
@@ -579,30 +685,18 @@ fn upsert_document_in_tx(
                     }
                 }
             }
-            (prev_file_id, 0)
+            0
         }
         BaseUpdateMode::CanonicalLazy => {
-            let prev_file_id = {
-                let mut stmt = tx
-                    .prepare_cached("SELECT file_id FROM nodes WHERE id = ?1")
+            if !prev_has_canonical_base {
+                let mut del_base = tx
+                    .prepare_cached("DELETE FROM bases WHERE node_id = ?1")
                     .map_err(map_sqlite_err)?;
-                stmt.query_row([node_id], |r| r.get(0))
-                    .map_err(map_sqlite_err)?
-            };
-            let mut del_base = tx
-                .prepare_cached("DELETE FROM bases WHERE node_id = ?1")
-                .map_err(map_sqlite_err)?;
-            del_base.execute([node_id]).map_err(map_sqlite_err)?;
-            (prev_file_id, 1)
+                del_base.execute([node_id]).map_err(map_sqlite_err)?;
+            }
+            1
         }
         BaseUpdateMode::ExplicitOverride(snapshot) => {
-            let prev_file_id = {
-                let mut stmt = tx
-                    .prepare_cached("SELECT file_id FROM nodes WHERE id = ?1")
-                    .map_err(map_sqlite_err)?;
-                stmt.query_row([node_id], |r| r.get(0))
-                    .map_err(map_sqlite_err)?
-            };
             let base_blob = compress_blob(snapshot.as_bytes());
             let mut ins_base = tx
                 .prepare_cached(
@@ -613,12 +707,10 @@ fn upsert_document_in_tx(
             ins_base
                 .execute(params![node_id, base_blob])
                 .map_err(map_sqlite_err)?;
-            (prev_file_id, 0)
+            0
         }
     };
 
-    let raw = serialize_document(doc)?;
-    let doc_blob = compress_blob(&raw);
     {
         let mut upsert_body = tx
             .prepare_cached(
@@ -631,28 +723,6 @@ fn upsert_document_in_tx(
             .map_err(map_sqlite_err)?;
     }
 
-    let span = effective_source_span(doc);
-    let file_path = span
-        .as_ref()
-        .map(|s| s.file.as_str())
-        .or_else(|| doc.attributes.get("source_file").map(String::as_str));
-    let new_file_id = match file_path {
-        Some(path) if !path.is_empty() => Some(intern_file_cached(tx, path, file_cache)?),
-        _ => None,
-    };
-
-    let (start_line, end_line, start_byte, end_byte) = match &span {
-        Some(s) => (
-            Some(s.start_line as i64),
-            Some(s.end_line as i64),
-            Some(s.start_byte as i64),
-            Some(s.end_byte as i64),
-        ),
-        None => (None, None, None, None),
-    };
-
-    let sym = build_symbol_index_data(&doc.anchor);
-    let node_type_code = i64::from(node_type_to_u8(&doc.node_type));
     {
         let mut update_node = tx
             .prepare_cached(
@@ -696,7 +766,7 @@ fn upsert_document_in_tx(
         prune_orphan_file_if_untracked(tx, prev_fid)?;
     }
 
-    {
+    if prev_has_doc {
         let mut del_exact = tx
             .prepare_cached("DELETE FROM symbol_exact WHERE node_id = ?1")
             .map_err(map_sqlite_err)?;
@@ -919,6 +989,9 @@ impl SqliteStorage {
             }
         } else {
             validate_existing_schema(&conn)?;
+            if create {
+                ensure_schema_indexes(&conn)?;
+            }
         }
 
         Ok(Self {
@@ -1204,11 +1277,9 @@ impl GraphStorage for SqliteStorage {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite_err)?;
-        let id = intern_node(&tx, &doc.anchor)?;
         let mut file_cache = HashMap::new();
-        upsert_document_in_tx(
+        upsert_document_by_anchor_in_tx(
             &tx,
-            id,
             doc,
             &mut file_cache,
             BaseUpdateMode::PreserveExistingCoW,
@@ -1368,13 +1439,10 @@ impl GraphStorage for SqliteStorage {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite_err)?;
-        let mut id_cache = HashMap::with_capacity(docs.len());
         let mut file_cache = HashMap::new();
         for (doc, snapshot) in docs {
-            let id = intern_node_cached(&tx, &doc.anchor, &mut id_cache)?;
-            upsert_document_in_tx(
+            upsert_document_by_anchor_in_tx(
                 &tx,
-                id,
                 doc,
                 &mut file_cache,
                 BaseUpdateMode::ExplicitOverride(snapshot),
@@ -1396,11 +1464,14 @@ impl GraphStorage for SqliteStorage {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite_err)?;
-        let mut id_cache = HashMap::with_capacity(docs.len());
         let mut file_cache = HashMap::new();
         for doc in docs {
-            let id = intern_node_cached(&tx, &doc.anchor, &mut id_cache)?;
-            upsert_document_in_tx(&tx, id, doc, &mut file_cache, BaseUpdateMode::CanonicalLazy)?;
+            upsert_document_by_anchor_in_tx(
+                &tx,
+                doc,
+                &mut file_cache,
+                BaseUpdateMode::CanonicalLazy,
+            )?;
         }
         #[cfg(test)]
         if FAIL_BULK_BEFORE_COMMIT.with(|fail| fail.replace(false)) {
@@ -2601,6 +2672,149 @@ mod tests {
                 .unwrap(),
             None
         );
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn symbol_exact_delete_uses_node_id_index_and_upgrades_legacy_v1_indexes() {
+        let path = test_store_path("symbol-exact-index");
+        let storage = SqliteStorage::new(path.to_str().unwrap()).unwrap();
+        storage
+            .put_documents_bulk_canonical(&[symbol_doc("aden://module/example.rs#alpha")])
+            .unwrap();
+
+        {
+            let conn = storage.lock_conn();
+            let mut stmt = conn
+                .prepare("EXPLAIN QUERY PLAN DELETE FROM symbol_exact WHERE node_id = ?1")
+                .unwrap();
+            let details: Vec<String> = stmt
+                .query_map([1_i64], |row| row.get::<_, String>(3))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            let joined = details.join(" | ");
+            assert!(
+                joined.contains("idx_symbol_exact_node"),
+                "expected DELETE plan to use idx_symbol_exact_node, got: {joined}"
+            );
+            assert!(
+                !joined.to_ascii_uppercase().contains("SCAN"),
+                "unexpected full-table SCAN in DELETE plan: {joined}"
+            );
+
+            conn.execute_batch("DROP INDEX idx_symbol_exact_node;")
+                .unwrap();
+        }
+        storage.flush().unwrap();
+        drop(storage);
+
+        let ro = SqliteStorage::open_existing(path.to_str().unwrap()).unwrap();
+        {
+            let conn = ro.lock_conn();
+            let has_idx: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_symbol_exact_node')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                !has_idx,
+                "open_existing must not mutate schema or take DDL locks on read open"
+            );
+        }
+        drop(ro);
+
+        let rw = SqliteStorage::new(path.to_str().unwrap()).unwrap();
+        {
+            let conn = rw.lock_conn();
+            let has_idx: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_symbol_exact_node')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(has_idx, "writer open must restore idx_symbol_exact_node");
+        }
+        drop(rw);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn canonical_bulk_duplicate_anchor_updates_in_place_without_stale_symbols() {
+        let path = test_store_path("dup-canonical-bulk");
+        let storage = SqliteStorage::new(path.to_str().unwrap()).unwrap();
+        let anchor = "aden://module/example.rs#shared_entry";
+
+        let mut first = symbol_doc(anchor);
+        first.source_span = Some(SourceSpan {
+            file: "src/old.rs".into(),
+            start_line: 1,
+            end_line: 3,
+            start_byte: 0,
+            end_byte: 25,
+        });
+        first.attributes.insert("source_hash".into(), "h1".into());
+
+        let mut second = symbol_doc(anchor);
+        second.source_span = Some(SourceSpan {
+            file: "src/new.rs".into(),
+            start_line: 10,
+            end_line: 14,
+            start_byte: 100,
+            end_byte: 180,
+        });
+        second.attributes.insert("source_hash".into(), "h2".into());
+
+        storage
+            .put_documents_bulk_canonical(&[first, second.clone()])
+            .unwrap();
+        storage.finalize_symbol_lexicon().unwrap();
+
+        assert_eq!(storage.get_document(anchor).unwrap(), Some(second.clone()));
+        assert_eq!(
+            storage.get_source_spans().unwrap(),
+            vec![(anchor.to_string(), second.source_span.clone().unwrap())]
+        );
+        assert_eq!(
+            storage.get_nodes_in_file("src/old.rs").unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            storage.get_nodes_in_file("src/new.rs").unwrap(),
+            vec![anchor.to_string()]
+        );
+
+        let exact = storage
+            .lookup_symbol_candidates("shared_entry")
+            .unwrap()
+            .unwrap();
+        assert!(exact.exact_index_hit);
+        assert_eq!(exact.anchors, vec![anchor.to_string()]);
+
+        {
+            let conn = storage.lock_conn();
+            let bases_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM bases", [], |r| r.get(0))
+                .unwrap();
+            let file_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
+                .unwrap();
+            let exact_rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM symbol_exact WHERE node_id = (SELECT id FROM nodes WHERE anchor = ?1)",
+                    [anchor],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(bases_count, 0);
+            assert_eq!(file_count, 1, "superseded src/old.rs row must be pruned");
+            assert_eq!(exact_rows, 1);
+        }
+
         drop(storage);
         std::fs::remove_dir_all(path).unwrap();
     }
