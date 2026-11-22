@@ -830,7 +830,6 @@ fn apply_merge_to_store(
     repo_path: &Path,
     storage: &aden_store::Storage,
 ) -> Result<MergeApplyOutcome, Box<dyn std::error::Error>> {
-    use aden_core::contract::ContractDocument;
     use aden_core::overlay::{load_overlay_lossy, sanitize_anchor_filename};
     use aden_emit::emit_contract_document;
     use aden_propose::{Proposal, ProposalStatus};
@@ -888,10 +887,10 @@ fn apply_merge_to_store(
     }
 
     if rec.proposal.conflict_count == 0 {
-        // Storage is the concrete Fjall backend: its bulk override commits the
-        // document, base, source projection and symbol index in one batch.
-        let snapshot = emit_contract_document(&ContractDocument::from_document(&fresh_doc));
-        storage.put_documents_bulk(&[(fresh_doc, snapshot)])?;
+        // Storage is the concrete SQLite WAL backend: its bulk canonical
+        // override commits the document, lazy base marker, source projection
+        // and symbol index in one transaction.
+        storage.put_documents_bulk_canonical(&[fresh_doc])?;
         storage.flush().map_err(|error| {
             format!("Repair committed for {anchor}, but durability is unconfirmed: {error}")
         })?;

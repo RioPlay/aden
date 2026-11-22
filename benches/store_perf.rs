@@ -3,10 +3,9 @@
 //! Storage performance benchmarks.
 //!
 //! Two measurements:
-//! 1. `store_open_drop` — open an existing fjall store and immediately drop it.
-//!    This was the 250ms floor per command with fjall 2.11 (monitor thread
-//!    unconditionally slept before checking the stop signal).  With fjall 3.1+
-//!    teardown uses a flume channel wake and completes in single-digit µs.
+//! 1. `store_open_drop` — open an existing SQLite WAL store and immediately drop it.
+//!    Historical baseline: fjall 2.11 had a 250ms floor, fjall 3.1 dropped to ~226ms;
+//!    SQLite WAL opens without journal replay or thread-pool teardown.
 //!
 //! 2. `get_all_edges_single_scan` vs `get_all_edges_per_type` — loading every
 //!    edge from the store.  The old bridge loop called `get_edges_by_type` once

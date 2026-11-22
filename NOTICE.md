@@ -324,20 +324,10 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Unlicense OR MIT
 - **Repository**: https://github.com/BurntSushi/byteorder
 
-### byteorder-lite v0.1.0
-
-- **License**: Unlicense OR MIT
-- **Repository**: https://github.com/image-rs/byteorder-lite
-
 ### bytes v1.12.2
 
 - **License**: MIT
 - **Repository**: https://github.com/tokio-rs/bytes
-
-### byteview v0.10.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/fjall-rs/byteview
 
 ### cast v0.3.0
 
@@ -404,11 +394,6 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/Marwes/combine
 
-### compare v0.0.6
-
-- **License**: MIT/Apache-2.0
-- **Repository**: https://github.com/contain-rs/compare
-
 ### const-oid v0.10.3
 
 - **License**: Apache-2.0 OR MIT
@@ -464,11 +449,6 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/crossbeam-rs/crossbeam
 
-### crossbeam-skiplist v0.1.3
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/crossbeam-rs/crossbeam
-
 ### crossbeam-utils v0.8.23
 
 - **License**: MIT OR Apache-2.0
@@ -505,11 +485,6 @@ platform-specific dependencies; not every entry ships in every binary.
 - **Repository**: https://github.com/TedDriggs/darling
 
 ### dashmap v5.5.3
-
-- **License**: MIT
-- **Repository**: https://github.com/xacrimon/dashmap
-
-### dashmap v6.2.1
 
 - **License**: MIT
 - **Repository**: https://github.com/xacrimon/dashmap
@@ -589,11 +564,6 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-embedded/embedded-hal
 
-### enum_dispatch v0.3.13
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://gitlab.com/antonok/enum_dispatch
-
 ### equivalent v1.0.3
 
 - **License**: Apache-2.0 OR MIT
@@ -603,6 +573,16 @@ platform-specific dependencies; not every entry ships in every binary.
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/lambda-fairy/rust-errno
+
+### fallible-iterator v0.3.0
+
+- **License**: MIT/Apache-2.0
+- **Repository**: https://github.com/sfackler/rust-fallible-iterator
+
+### fallible-streaming-iterator v0.1.9
+
+- **License**: MIT/Apache-2.0
+- **Repository**: https://github.com/sfackler/fallible-streaming-iterator
 
 ### fancy-regex v0.18.0
 
@@ -634,20 +614,10 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/petgraph/fixedbitset
 
-### fjall v3.1.13
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/fjall-rs/fjall
-
 ### flate2 v1.1.11
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/flate2-rs
-
-### flume v0.12.0
-
-- **License**: Apache-2.0/MIT
-- **Repository**: https://github.com/zesterer/flume
 
 ### fnv v1.0.7
 
@@ -739,15 +709,15 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/hashbrown
 
-### hashbrown v0.16.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/rust-lang/hashbrown
-
 ### hashbrown v0.17.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/hashbrown
+
+### hashlink v0.12.2
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/djc/hashlink
 
 ### heck v0.5.0
 
@@ -833,11 +803,6 @@ platform-specific dependencies; not every entry ships in every binary.
 
 - **License**: ISC
 - **Repository**: https://github.com/hannobraun/inotify-sys
-
-### interval-heap v0.0.5
-
-- **License**: MIT/Apache-2.0
-- **Repository**: https://github.com/contain-rs/interval-heap
 
 ### itertools v0.10.5
 
@@ -954,6 +919,11 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://gitlab.redox-os.org/redox-os/libredox.git
 
+### libsqlite3-sys v0.40.0
+
+- **License**: MIT
+- **Repository**: https://github.com/rusqlite/rusqlite
+
 ### linux-raw-sys v0.12.1
 
 - **License**: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
@@ -994,17 +964,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/log
 
-### lsm-tree v3.1.10
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/fjall-rs/lsm-tree
-
 ### lsp-types v0.94.1
 
 - **License**: MIT
 - **Repository**: https://github.com/gluon-lang/lsp-types
 
-### lz4_flex v0.13.2
+### lz4_flex v0.14.2
 
 - **License**: MIT
 - **Repository**: https://github.com/pseitz/lz4_flex
@@ -1299,11 +1264,6 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/stacker/
 
-### quick_cache v0.6.24
-
-- **License**: MIT
-- **Repository**: https://github.com/arthurprs/quick-cache
-
 ### quote v1.0.47
 
 - **License**: MIT OR Apache-2.0
@@ -1399,15 +1359,15 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0
 - **Repository**: https://github.com/modelcontextprotocol/rust-sdk/
 
+### rusqlite v0.43.0
+
+- **License**: MIT
+- **Repository**: https://github.com/rusqlite/rusqlite
+
 ### rust-stemmers v1.2.0
 
 - **License**: MIT/BSD-3-Clause
 - **Repository**: https://github.com/CurrySoftware/rust-stemmers
-
-### rustc-hash v2.1.3
-
-- **License**: Apache-2.0 OR MIT
-- **Repository**: https://github.com/rust-lang/rustc-hash
 
 ### rustc_version v0.4.1
 
@@ -1504,11 +1464,6 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/kornelski/rust-security-framework
 
-### self_cell v1.3.0
-
-- **License**: Apache-2.0 OR GPL-2.0-only
-- **Repository**: https://github.com/Voultapher/self_cell
-
 ### semver v1.0.28
 
 - **License**: MIT OR Apache-2.0
@@ -1548,11 +1503,6 @@ platform-specific dependencies; not every entry ships in every binary.
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/toml-rs/toml
-
-### sfa v1.0.0
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/fjall-rs/sfa
 
 ### sha2 v0.11.1
 
@@ -1598,11 +1548,6 @@ platform-specific dependencies; not every entry ships in every binary.
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/socket2
-
-### spin v0.9.9
-
-- **License**: MIT
-- **Repository**: https://github.com/mvdnes/spin-rs.git
 
 ### stable_deref_trait v1.2.1
 
@@ -1864,11 +1809,6 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/xberg-io/tree-sitter-language-pack
 
-### twox-hash v2.1.5
-
-- **License**: MIT
-- **Repository**: https://github.com/shepmaster/twox-hash
-
 ### typenum v1.20.1
 
 - **License**: MIT OR Apache-2.0
@@ -1939,10 +1879,10 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/uuid-rs/uuid
 
-### varint-rs v2.2.1
+### vcpkg v0.2.15
 
-- **License**: 0BSD
-- **Repository**: https://git.sr.ht/~leonskij/varint
+- **License**: MIT/Apache-2.0
+- **Repository**: https://github.com/mcgoo/vcpkg-rs
 
 ### version_check v0.9.5
 
@@ -2093,11 +2033,6 @@ platform-specific dependencies; not every entry ships in every binary.
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/Stebalien/xattr
-
-### xxhash-rust v0.8.21
-
-- **License**: BSL-1.0
-- **Repository**: https://github.com/DoumanAsh/xxhash-rust
 
 ### yoke v0.8.4
 

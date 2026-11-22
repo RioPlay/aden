@@ -268,8 +268,12 @@ fn understand_and_lookup_have_store_snapshot_parity_and_verified_source() {
     let understood = fixture.json(&["understand", "target", "--json"]);
     let callers = fixture.json(&["locate", "--caller-of", "target", "--json"]);
     let store_path = fixture.project_data().join("store");
-    let storage = aden_store::Storage::open_existing(store_path.to_str().unwrap()).unwrap();
-    assert!(aden_store::Storage::open_existing(store_path.to_str().unwrap()).is_err());
+    let lock_path = aden_core::lock::store_lock_path(&store_path);
+    let writer_lock =
+        aden_core::lock::FileLock::acquire_timeout(&lock_path, std::time::Duration::ZERO).unwrap();
+    assert!(
+        aden_core::lock::FileLock::acquire_timeout(&lock_path, std::time::Duration::ZERO).is_err()
+    );
     let fallback_located = fixture.json(&["locate", "--symbol", "target", "--json"]);
     assert_eq!(fallback_located["items"], located["items"]);
     assert_eq!(fallback_located["total"], located["total"]);
@@ -293,7 +297,7 @@ fn understand_and_lookup_have_store_snapshot_parity_and_verified_source() {
     assert!(!fallback["context"].as_str().unwrap().contains("unrelated"));
     let fallback_callers = fixture.json(&["locate", "--caller-of", "target", "--json"]);
     assert_eq!(fallback_callers["items"], callers["items"]);
-    drop(storage);
+    drop(writer_lock);
 }
 
 #[test]
@@ -402,8 +406,12 @@ fn stale_and_corrupt_snapshots_never_claim_old_graph_current_when_store_is_locke
     );
 
     let store_path = fixture.project_data().join("store");
-    let storage = aden_store::Storage::open_existing(store_path.to_str().unwrap()).unwrap();
-    assert!(aden_store::Storage::open_existing(store_path.to_str().unwrap()).is_err());
+    let lock_path = aden_core::lock::store_lock_path(&store_path);
+    let writer_lock =
+        aden_core::lock::FileLock::acquire_timeout(&lock_path, std::time::Duration::ZERO).unwrap();
+    assert!(
+        aden_core::lock::FileLock::acquire_timeout(&lock_path, std::time::Duration::ZERO).is_err()
+    );
 
     std::fs::write(&snapshot, &old_snapshot).unwrap();
     let locked_old = fixture.run(&["understand", "target", "--json"]);
@@ -433,7 +441,7 @@ fn stale_and_corrupt_snapshots_never_claim_old_graph_current_when_store_is_locke
             .unwrap()
             .contains("old_dependency")
     );
-    drop(storage);
+    drop(writer_lock);
 }
 
 #[test]

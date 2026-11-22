@@ -2,26 +2,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Storage abstraction layer for the Aden knowledge graph.
 //!
-//! Defines the [`GraphStorage`] trait and provides a fjall (LSM-tree)
-//! implementation with Postcard serialization.
+//! Defines the [`GraphStorage`] trait and provides a SQLite 3 WAL
+//! implementation (`ADNS\x01`) with Postcard + `lz4_flex` serialization and a
+//! consolidated 7-table schema (`files`, `nodes`, `node_bodies`, `bases`,
+//! `edges`, `symbol_exact`, `meta`).
 //!
 //! ## Design Philosophy
 //!
-//! `.adoc` files are the source of truth. The storage layer is a materialized
-//! view — fast reads, fast writes, swappable implementation.
-//!
-//! ## Key-Value Layout
-//!
-//! | Tree | Key | Value |
-//! |---|---|---|
-//! | `docs` | `doc:{anchor}` | Serialized Document |
-//! | `source_spans` | `{anchor}` | Serialized SourceSpan projection |
-//! | `edges` | `edge<US>{src}<US>{dst}<US>{type}` | () (edge existence) |
-//! | `outgoing` | `out:{anchor}` | Vec<(anchor, edge_type)> |
-//! | `incoming` | `in:{anchor}` | Vec<(anchor, edge_type)> |
-//! | `index` | `idx:{term}` | Vec<(anchor, score)> |
-//! | `meta` | `meta:{key}` | value |
-//! | `bases` | `base:{anchor}` | canonical contract text as of last gen (UTF-8) |
+//! `.adoc` and source files are the source of truth. The storage layer is a
+//! materialized view — fast reads, fast writes, swappable implementation.
+//! Canonical merge bases are reconstructed lazily from stored documents, while
+//! `bases` stores only sparse explicit overrides.
 
 use aden_core::{Document, EdgeType, SourceSpan};
 use serde::{Deserialize, Serialize};
@@ -159,11 +150,20 @@ pub struct SymbolCandidateLookup {
     pub exact_index_hit: bool,
 }
 
+/// Discovered file metadata persisted in the normalized `files` table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRecord {
+    pub rel_path: String,
+    pub mtime: Option<u64>,
+    pub digest: Option<String>,
+    pub disposition: Option<String>,
+}
+
 /// The storage interface for the Aden knowledge graph.
 ///
 /// This trait abstracts away the underlying storage engine. Implementations
-/// can be Sled, TiKV, or any other KV store. The trait is designed to
-/// never change — only the implementation swaps.
+/// can be SQLite WAL, in-memory fakes, or any other backend. The trait is
+/// designed to evolve only via backwards-compatible default methods.
 pub trait GraphStorage: Send + Sync {
     /// Get a document by anchor.
     fn get_document(&self, anchor: &str) -> Result<Option<Document>, StoreError>;
@@ -231,6 +231,48 @@ pub trait GraphStorage: Send + Sync {
             self.put_base_snapshot(&doc.anchor, snapshot)?;
         }
         Ok(())
+    }
+
+    /// Persist a batch of documents whose merge bases match their canonical
+    /// `emit_contract_document` representation.
+    ///
+    /// Backends that support lazy canonical bases (such as `SqliteStorage`)
+    /// record a compact marker instead of storing redundant uncompressed/compressed
+    /// copies in `bases`, reconstructing the canonical text on demand from the
+    /// stored document.
+    fn put_documents_bulk_canonical(&self, docs: &[Document]) -> Result<(), StoreError> {
+        let pairs: Vec<(Document, String)> = docs
+            .iter()
+            .map(|doc| {
+                let text = aden_emit::emit_contract_document(
+                    &aden_core::contract::ContractDocument::from_document(doc),
+                );
+                (doc.clone(), text)
+            })
+            .collect();
+        self.put_documents_bulk(&pairs)
+    }
+
+    /// Return the normalized `source_file` path for `anchor` without decoding
+    /// full document bodies when indexed metadata is present.
+    fn get_source_file(&self, anchor: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .get_document(anchor)?
+            .and_then(|d| d.attributes.get("source_file").cloned()))
+    }
+
+    /// Synchronize project-wide file discovery metadata (`files` table).
+    fn sync_file_records(&self, _records: &[FileRecord]) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Return all document anchors belonging to `rel_path`, ordered by line.
+    fn get_nodes_in_file(&self, rel_path: &str) -> Result<Vec<String>, StoreError> {
+        Ok(self
+            .get_source_spans()?
+            .into_iter()
+            .filter_map(|(anchor, span)| (span.file == rel_path).then_some(anchor))
+            .collect())
     }
 
     /// Get outgoing edges for an anchor.
@@ -386,13 +428,14 @@ pub trait GraphStorage: Send + Sync {
 
 // ─── Backend selection ───────────────────────────────────────────────────────
 
-pub mod fjall_store;
-pub use fjall_store::FjallStorage;
+pub mod sqlite_store;
+pub use sqlite_store::{SYMBOL_LEXICON_VERSION, SqliteStorage};
 
-/// The active storage backend. Aden uses the fjall (pure-Rust LSM-tree) engine.
+/// The active storage backend. Aden uses SQLite 3 in WAL mode for lock-free
+/// multi-process reads, atomic bulk writes, and fast cold opens.
 /// The `Storage` alias keeps call sites engine-agnostic, so the `GraphStorage`
-/// trait remains the single seam if another backend is ever added.
-pub type Storage = FjallStorage;
+/// trait remains the single seam if another backend is ever swapped in.
+pub type Storage = SqliteStorage;
 
 // ─── Error Types ─────────────────────────────────────────────────────────────
 
@@ -471,10 +514,10 @@ mod tests {
                     result.extend(files(&entry.path()));
                 } else {
                     let metadata = entry.metadata().unwrap();
-                    // Windows disallows reading fjall's live OS-locked file.
-                    // Preserve its inventory/metadata check; compare every
-                    // other file's contents, including the version marker.
-                    let contents = if entry.file_name() == "lock" {
+                    // Skip live OS lock / WAL shared-memory coordination files whose
+                    // contents mutate or carry Windows byte-range locks.
+                    let name = entry.file_name();
+                    let contents = if matches!(name.to_str(), Some("lock" | "graph.sqlite-shm")) {
                         None
                     } else {
                         Some(fs::read(entry.path()).unwrap())
@@ -509,17 +552,18 @@ mod tests {
         let marker = std::path::Path::new(&path).join("version");
         for bytes in [
             b"".as_slice(),
-            b"F",
-            b"FJ",
-            b"FJL",
-            b"FJX\x03",
-            b"fjl\x03",
-            b"FJL\x00",
-            b"FJL\x01",
+            b"A",
+            b"AD",
+            b"ADN",
+            b"ADNS",
+            b"ADNX\x01",
+            b"adns\x01",
+            b"ADNS\x00",
+            b"ADNS\x02",
+            b"ADNS\xff",
             b"FJL\x02",
-            b"FJL\x04",
-            b"FJL\xff",
-            b"not-a-valid-fjall-version",
+            b"FJL\x03",
+            b"not-a-valid-store-version",
         ] {
             fs::write(&marker, bytes).unwrap();
             assert!(
@@ -573,45 +617,47 @@ mod tests {
     }
 
     #[test]
-    fn fjall_version_mismatch_maps_to_incompatible_not_io() {
-        // The migration-gate linchpin: a format-version mismatch must surface as
-        // the distinct `IncompatibleVersion` variant (so a creation path can
-        // wipe-and-rebuild on it), while EVERY other fjall error stays on the
-        // generic `Io` path (so a real I/O failure never triggers deletion). If a
-        // future fjall renames the variant, this test fails loudly.
-        let version: StoreError = fjall::Error::InvalidVersion(None).into();
+    fn non_directory_and_corrupt_db_map_to_io_not_incompatible() {
+        // Real filesystem / database I/O errors must stay on `StoreError::Io` so
+        // callers never auto-wipe a temporarily unreadable or non-directory path.
+        let path = temp_path();
+        fs::write(&path, b"regular-file").unwrap();
+        let file_err = Storage::new(&path);
+        fs::remove_file(&path).ok();
         assert!(
-            matches!(version, StoreError::IncompatibleVersion(_)),
-            "InvalidVersion must map to IncompatibleVersion, got {version:?}"
+            matches!(file_err, Err(StoreError::Io(_))),
+            "a regular file at store path must map to Io"
         );
-        let other: StoreError = fjall::Error::InvalidTrailer.into();
+
+        let dir = temp_path();
+        {
+            let _s = Storage::new(&dir).unwrap();
+        }
+        fs::write(format!("{dir}/graph.sqlite"), b"corrupt-sqlite-header").unwrap();
+        let corrupt_err = Storage::new(&dir);
+        fs::remove_dir_all(&dir).ok();
         assert!(
-            matches!(other, StoreError::Io(_)),
-            "a non-version fjall error must map to Io, got {other:?}"
+            matches!(corrupt_err, Err(StoreError::Io(_))),
+            "corrupt sqlite bytes with valid version marker must map to Io"
         );
     }
 
     #[test]
     fn open_surfaces_incompatible_version_for_unreadable_format() {
         // End-to-end through the real engine: create a valid store, corrupt its
-        // on-disk version marker, and reopen. The engine reports an unreadable
-        // format and `Storage::new` surfaces it as `IncompatibleVersion` — the
-        // same signal a genuine older-format (e.g. fjall V2) store produces, which
-        // gen's recovery path keys off to rebuild from source.
+        // on-disk version marker (e.g. simulating an older Fjall store or a
+        // future store format), and reopen cleanly as `IncompatibleVersion`.
         let path = temp_path();
         {
-            let _s = Storage::new(&path).unwrap(); // materialize a valid v3 store
+            let _s = Storage::new(&path).unwrap();
         }
-        fs::write(format!("{path}/version"), b"not-a-valid-fjall-version").unwrap();
-        // `unwrap_err` would require `FjallStorage: Debug`; map to the error (Ok
-        // value dropped). Clean up the temp dir BEFORE asserting so a failure
-        // doesn't leak it.
+        fs::write(format!("{path}/version"), b"FJL\x03").unwrap();
         let got_incompatible =
             matches!(Storage::new(&path), Err(StoreError::IncompatibleVersion(_)));
         fs::remove_dir_all(&path).ok();
         assert!(
             got_incompatible,
-            "a corrupt/old version marker must surface IncompatibleVersion"
+            "an old or invalid version marker must surface IncompatibleVersion"
         );
     }
 

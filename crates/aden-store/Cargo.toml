@@ -9,13 +9,14 @@ description = "Aden: Storage abstraction layer for the knowledge graph"
 
 [dependencies]
 aden-core = { path = "../aden-core" }
+aden-emit = { path = "../aden-emit" }
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
-# fjall (pure-Rust LSM-tree) is aden's storage engine: vs the previous sled
-# backend it gave an ~8.5x smaller store on the Linux kernel (528 MB vs 4.4 GB),
-# faster gen, faster queries, and pulls no unmaintained transitive deps.
-fjall = "3.1.8"
+# SQLite 3 (WAL mode, static bundled amalgamation) + pure-Rust lz4_flex for
+# fast, compact, multi-reader concurrent storage with sub-millisecond cold opens.
+rusqlite = { version = "0.43", default-features = false, features = ["bundled", "cache"] }
+lz4_flex = { version = "0.14", default-features = false, features = ["alloc", "safe-encode", "safe-decode", "checked-decode"] }
 
 [dev-dependencies]
 uuid = { version = "1.12", features = ["v4", "serde"] }

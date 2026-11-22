@@ -1587,7 +1587,7 @@ fn build_long_version() -> &'static str {
             aden_graph::snapshot::SNAPSHOT_VERSION,
             indexer::fresh::INDEX_LAYOUT_VERSION,
             types::GEN_LOGIC_VERSION,
-            aden_store::fjall_store::SYMBOL_LEXICON_VERSION
+            aden_store::SYMBOL_LEXICON_VERSION
         )
         .into_boxed_str(),
     )

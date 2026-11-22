@@ -150,6 +150,24 @@ pub fn snapshot_covers_store(snapshot: &Path, store: &Path) -> bool {
 }
 
 fn newest_mtime_under(dir: &Path) -> Option<SystemTime> {
+    let sqlite_db = dir.join("graph.sqlite");
+    if sqlite_db.is_file() {
+        // Ignore directory metadata, -shm, and empty -wal files so concurrent
+        // SQLite WAL reads never advance the apparent store mtime past snapshot.
+        let mut newest = sqlite_db.metadata().ok()?.modified().ok()?;
+        for extra in ["version", "graph.sqlite-wal"] {
+            let path = dir.join(extra);
+            if let Ok(meta) = path.metadata()
+                && (extra != "graph.sqlite-wal" || meta.len() > 0)
+                && let Ok(modified) = meta.modified()
+                && modified > newest
+            {
+                newest = modified;
+            }
+        }
+        return Some(newest);
+    }
+
     let meta = dir.metadata().ok()?;
     let mut newest = meta.modified().ok()?;
     if meta.is_dir() {
