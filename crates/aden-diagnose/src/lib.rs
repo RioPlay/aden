@@ -1940,8 +1940,10 @@ mod tests {
             "[[explicit-md]]\n\nThis markdown uses an AsciiDoc anchor.\n",
         );
 
-        let mut rules = DiagnosticRules::default();
-        rules.suppress_plain_doc_orphans = true;
+        let rules = DiagnosticRules {
+            suppress_plain_doc_orphans: true,
+            ..Default::default()
+        };
         let diagnosis = diagnose_with_rules(&dir, &rules).expect("diagnose");
         let orphan_files: Vec<String> = diagnosis
             .issues
@@ -2139,8 +2141,10 @@ mod tests {
             EdgeType::Calls,
         );
 
-        let mut rules = DiagnosticRules::default();
-        rules.coupling_hotspot_threshold = 3;
+        let rules = DiagnosticRules {
+            coupling_hotspot_threshold: 3,
+            ..Default::default()
+        };
         let issues = scan_coupling_hotspots(&graph, &rules);
         assert!(issues.iter().all(|issue| issue.severity == Severity::Info));
         assert!(
@@ -2253,8 +2257,10 @@ mod tests {
         link(&mut graph, "mod-project", hub, EdgeType::Contains);
         link(&mut graph, hub, "mod-project", EdgeType::PartOf);
 
-        let mut rules = DiagnosticRules::default();
-        rules.god_hub_degree_threshold = 4;
+        let rules = DiagnosticRules {
+            god_hub_degree_threshold: 4,
+            ..Default::default()
+        };
         let issues = scan_god_hubs(&graph, &rules);
         assert!(issues.iter().all(|issue| issue.severity == Severity::Info));
         let hubs: Vec<(String, u64, u64, u64)> = issues
@@ -2344,8 +2350,10 @@ mod tests {
             push_node(&mut graph, &format!("aden://module/{rel}#sym"), Some(rel));
         }
 
-        let mut rules = DiagnosticRules::default();
-        rules.duplicate_module_min_overlap = 0.30;
+        let rules = DiagnosticRules {
+            duplicate_module_min_overlap: 0.30,
+            ..Default::default()
+        };
         let issues = scan_duplicate_modules(&graph, &dir, &rules);
         assert_eq!(issues.len(), 2);
         assert!(issues.iter().all(|issue| {

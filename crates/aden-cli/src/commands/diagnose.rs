@@ -13,11 +13,13 @@ use std::path::Path;
 /// Returns human-readable text output by default, or JSON if `format == "json"`.
 pub fn cmd_diagnose(path: &Path, format: &str) -> Result<(), Box<dyn std::error::Error>> {
     let root = crate::util::find_project_root(path);
-    let mut rules = aden_diagnose::DiagnosticRules::default();
     // A checkout with no `.aden/` directory has no in-tree doc project. Plain
     // markdown orphans there are noise; structural findings still come from the
     // indexed code graph when one is available.
-    rules.suppress_plain_doc_orphans = !root.join(".aden").is_dir();
+    let rules = aden_diagnose::DiagnosticRules {
+        suppress_plain_doc_orphans: !root.join(".aden").is_dir(),
+        ..Default::default()
+    };
     let policy = aden_policy::audit_policy(path);
 
     match format {
