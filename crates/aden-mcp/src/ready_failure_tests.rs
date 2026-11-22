@@ -134,20 +134,14 @@ fn ready_failure_redacts_nested_keys_and_values_preserving_signals() {
 
 #[test]
 fn ready_failure_redacts_whole_ambiguous_prose_with_spaced_paths() {
+    // An unquoted path containing spaces cannot be bounded, so the whole value
+    // is withheld rather than leaving `Person\secret.rs` visible.
     for text in [
         r"Read C:\Users\Private Person\secret.rs failed",
-        r#"Read "C:\Users\Private Person\secret.rs" failed"#,
-        r"Read 'C:\Users\Private Person\secret.rs' failed",
         "Read /home/Private Person/secret.rs failed",
-        "Read \"/home/Private Person/secret.rs\" failed",
-        "Read '/home/Private Person/secret.rs' failed",
         r"Read \\server\Private Person\secret.rs failed",
     ] {
-        let mut result = failed_ready();
-        let mut nested = serde_json::Map::new();
-        nested.insert(text.into(), json!([text, {"message": text}]));
-        result["nested"] = nested.into();
-        let response = envelope(&result.to_string());
+        let response = nested_envelope(text);
         assert_eq!(response["command_result_state"], "present");
         assert_eq!(
             response["command_result"]["nested"],
@@ -156,6 +150,44 @@ fn ready_failure_redacts_whole_ambiguous_prose_with_spaced_paths() {
         assert!(!response.to_string().contains("Person"));
         assert!(!response.to_string().contains("secret.rs"));
     }
+    // A quoted path is delimited by its closing quote, so the diagnostic prose
+    // survives while the path stays hidden.
+    for (text, expected) in [
+        (
+            r#"Read "C:\Users\Private Person\secret.rs" failed"#,
+            r#"Read "<path>" failed"#,
+        ),
+        (
+            r"Read 'C:\Users\Private Person\secret.rs' failed",
+            "Read '<path>' failed",
+        ),
+        (
+            "Read \"/home/Private Person/secret.rs\" failed",
+            "Read \"<path>\" failed",
+        ),
+        (
+            "Read '/home/Private Person/secret.rs' failed",
+            "Read '<path>' failed",
+        ),
+    ] {
+        let response = nested_envelope(text);
+        assert_eq!(response["command_result_state"], "present");
+        assert_eq!(
+            response["command_result"]["nested"],
+            json!({expected: [expected, {"message": expected}]}),
+            "prose after a quoted path must survive: {text}"
+        );
+        assert!(!response.to_string().contains("Person"));
+        assert!(!response.to_string().contains("secret.rs"));
+    }
+}
+
+fn nested_envelope(text: &str) -> serde_json::Value {
+    let mut result = failed_ready();
+    let mut nested = serde_json::Map::new();
+    nested.insert(text.into(), json!([text, {"message": text}]));
+    result["nested"] = nested.into();
+    envelope(&result.to_string())
 }
 
 #[test]

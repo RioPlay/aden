@@ -124,6 +124,10 @@ const COMMANDS_WITHOUT_MCP_TOOL: &[(&str, &str)] = &[
         "config",
         "local aden configuration get/set (.aden/config.toml); host-specific operator tool, not useful or safe to surface over MCP",
     ),
+    (
+        "findings",
+        "CLI-only structured findings reader; docs/ai-integration.adoc designates findings as CLI-only",
+    ),
 ];
 
 /// Extract clap positional labels from `Arguments:` (e.g. `[DIR]`,

@@ -129,9 +129,24 @@ fn build_src_map_from_grouped(
     root: &Path,
     spans_by_file: std::collections::HashMap<String, Vec<super::grep::Span>>,
 ) -> SrcMap {
+    let canon_root = root.canonicalize().ok();
     let mut map = SrcMap::new();
     for (file, spans) in spans_by_file {
-        let path = absolute_source_path(root, &file);
+        let raw_path = Path::new(&file);
+        let fast_path = if !raw_path.is_absolute()
+            && !file.contains("..")
+            && let Some(cr) = canon_root.as_ref()
+        {
+            let candidate = if cfg!(windows) && file.contains('/') {
+                cr.join(file.replace('/', "\\"))
+            } else {
+                cr.join(raw_path)
+            };
+            candidate.exists().then_some(candidate)
+        } else {
+            None
+        };
+        let path = fast_path.unwrap_or_else(|| absolute_source_path(root, &file));
         let display = native_display_path(&path, cfg!(windows));
         let editor = editor_path_from_native(&display, cfg!(windows));
         for span in spans {
@@ -172,6 +187,7 @@ const SNIPPET_MAX_CHARS: usize = 380;
 /// the working tree at export time — the snippet shows what's on disk NOW,
 /// which is exactly what the viewer's "open in editor" lands on.
 fn collect_snippets(src: &SrcMap, kept: &BTreeSet<String>) -> BTreeMap<String, String> {
+    use rayon::prelude::*;
     let mut by_file: BTreeMap<&Path, Vec<(&str, usize, usize)>> = BTreeMap::new();
     for anchor in kept {
         if let Some(source) = src.get(anchor) {
@@ -182,33 +198,36 @@ fn collect_snippets(src: &SrcMap, kept: &BTreeSet<String>) -> BTreeMap<String, S
             ));
         }
     }
-    let mut out: BTreeMap<String, String> = BTreeMap::new();
-    for (file, anchors) in by_file {
-        let Ok(text) = std::fs::read_to_string(file) else {
-            continue;
-        };
-        let lines: Vec<&str> = text.lines().collect();
-        for (anchor, start, loc) in anchors {
-            let from = start.saturating_sub(1).min(lines.len());
-            let to = (from + loc.min(SNIPPET_MAX_LINES)).min(lines.len());
-            if from >= to {
-                continue;
-            }
-            let mut snip = lines[from..to].join("\n");
-            if snip.len() > SNIPPET_MAX_CHARS {
-                let mut cut = SNIPPET_MAX_CHARS;
-                while !snip.is_char_boundary(cut) {
-                    cut -= 1;
+    let work: Vec<_> = by_file.into_iter().collect();
+    work.into_par_iter()
+        .flat_map_iter(|(file, anchors)| {
+            let Ok(text) = std::fs::read_to_string(file) else {
+                return Vec::new();
+            };
+            let lines: Vec<&str> = text.lines().collect();
+            let mut per_file = Vec::with_capacity(anchors.len());
+            for (anchor, start, loc) in anchors {
+                let from = start.saturating_sub(1).min(lines.len());
+                let to = (from + loc.min(SNIPPET_MAX_LINES)).min(lines.len());
+                if from >= to {
+                    continue;
                 }
-                snip.truncate(cut);
-                snip.push('…');
+                let mut snip = lines[from..to].join("\n");
+                if snip.len() > SNIPPET_MAX_CHARS {
+                    let mut cut = SNIPPET_MAX_CHARS;
+                    while !snip.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    snip.truncate(cut);
+                    snip.push('…');
+                }
+                if !snip.trim().is_empty() {
+                    per_file.push((anchor.to_string(), snip));
+                }
             }
-            if !snip.trim().is_empty() {
-                out.insert(anchor.to_string(), snip);
-            }
-        }
-    }
-    out
+            per_file
+        })
+        .collect()
 }
 
 /// First prose paragraph of a doc node, word-capped — the flyby card for
@@ -395,10 +414,11 @@ const NODE_CAP: usize = 60;
 /// intra-community degree).
 const DRILL_CAP: usize = 30;
 
-/// Produce the JSON slice for `aden view` — reuses the exact same slices + JSON
-/// renderers as `viz`, so the viewer and the text formats can never diverge.
+/// Produce the JSON slice for `aden view` as an unserialized `Value` — reuses
+/// the exact same slices as `viz` while letting `view` attach replay frames
+/// and strip unused fields without double JSON parse/serialize overhead.
 #[cfg(feature = "view")]
-pub(crate) fn viz_json_for(
+pub(crate) fn viz_value_for(
     path: &Path,
     anchor: Option<&str>,
     mode: &str,
@@ -406,7 +426,7 @@ pub(crate) fn viz_json_for(
     scope: Option<&str>,
     resolution: f64,
     simple: bool,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     // `view` shares the positional trap (`aden view .`): same guard.
     reject_directory_anchor(anchor)?;
     let root = find_project_root(path);
@@ -419,9 +439,9 @@ pub(crate) fn viz_json_for(
     match mode {
         // The offline viewer must retain every anchor and relationship. Its
         // density control limits drawing, not the navigable graph payload.
-        "graph" => Ok(render_graph_json(&graph, &root, 0, resolution, !simple)),
+        "graph" => Ok(render_graph_value(&graph, &root, 0, resolution, !simple)),
         "communities" => {
-            render_communities_view_json(&graph, &root, 2, resolution, MAX_COMMUNITIES, DRILL_CAP)
+            render_communities_view_value(&graph, &root, 2, resolution, MAX_COMMUNITIES, DRILL_CAP)
         }
         "blast" | "reach" | "connectivity" => {
             let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
@@ -434,7 +454,7 @@ pub(crate) fn viz_json_for(
                 _ => blast_slice(&graph, &root_anchor, depth, NODE_CAP),
             };
             let src = build_src_map_for_anchors(&root, &nodes);
-            Ok(render_json(
+            Ok(render_value(
                 &root_anchor,
                 &nodes,
                 &edges,
@@ -451,15 +471,15 @@ pub(crate) fn viz_json_for(
     }
 }
 
-/// Build a graph JSON from an explicit *set of anchors* (the union of symbols
+/// Build a graph `Value` from an explicit *set of anchors* (the union of symbols
 /// touched across git history, for `--replay`): nodes are those anchors present in
 /// the graph (capped), edges are the graph edges among them. No single root.
 #[cfg(feature = "view")]
-pub(crate) fn anchors_json(
+pub(crate) fn anchors_value(
     path: &Path,
     anchors: &BTreeSet<String>,
     cap: usize,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let root = find_project_root(path);
     let _stale_hint = super::StaleHintGuard::new(&root, true);
     super::ensure_fresh(&root);
@@ -510,7 +530,7 @@ pub(crate) fn anchors_json(
         }
     }
     let src = build_src_map_for_anchors(&root, &nodes);
-    Ok(render_json(
+    Ok(render_value(
         "", &nodes, &edges, &src, &graph, &root, "graph",
     ))
 }
@@ -531,16 +551,17 @@ const GRAPH_CAP: usize = 800;
 /// for: aden computes the rich, whole-graph, code+prose view model *once* and any
 /// consumer (viewer, agent, CI gate) lenses it, instead of each re-deriving it.
 fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f64) -> String {
-    render_graph_json(graph, root, cap, resolution, true)
+    serde_json::to_string_pretty(&render_graph_value(graph, root, cap, resolution, true))
+        .unwrap_or_else(|_| "{}".to_string())
 }
 
-fn render_graph_json(
+fn render_graph_value(
     graph: &Graph,
     root: &Path,
     cap: usize,
     resolution: f64,
     communities: bool,
-) -> String {
+) -> serde_json::Value {
     // Total (in+out) degree per node — the importance signal the cap ranks on, and a
     // first-class field every consumer wants (centrality without a re-derivation).
     let mut degree: BTreeMap<String, usize> = BTreeMap::new();
@@ -694,7 +715,7 @@ fn render_graph_json(
 
     let generated_at = now_rfc3339();
     let git_hash = git_head_short(root).unwrap_or_default();
-    serde_json::to_string_pretty(&serde_json::json!({
+    serde_json::json!({
         "mode": "graph",
         "generated_at": generated_at,
         "git_hash": git_hash,
@@ -705,8 +726,7 @@ fn render_graph_json(
         "shown_nodes": kept.len(),
         "all_anchors": all_anchors,
         "all_anchors_total": total,
-    }))
-    .unwrap_or_else(|_| "{}".to_string())
+    })
 }
 
 /// Blast radius: BFS *incoming* over impact edges from `root_anchor` — the
@@ -897,6 +917,19 @@ fn render_communities_view_json(
     max_comms: usize,
     member_cap: usize,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    let val =
+        render_communities_view_value(graph, root, min_size, resolution, max_comms, member_cap)?;
+    Ok(serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".to_string()))
+}
+
+fn render_communities_view_value(
+    graph: &Graph,
+    root: &Path,
+    min_size: usize,
+    resolution: f64,
+    max_comms: usize,
+    member_cap: usize,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let kept: Vec<Vec<String>> = aden_graph::community::detect_communities(graph, resolution)
         .into_iter()
         .filter(|c| c.len() >= min_size)
@@ -1024,13 +1057,12 @@ fn render_communities_view_json(
         );
     }
 
-    Ok(serde_json::to_string_pretty(&serde_json::json!({
+    Ok(serde_json::json!({
         "mode": "communities",
         "nodes": super_nodes,
         "edges": super_edges,
         "drill": serde_json::Value::Object(drill),
     }))
-    .unwrap_or_else(|_| "{}".to_string()))
 }
 
 /// The group segment (crate/dir) of an anchor: `aden://module/aden-cli/x#y` → `aden-cli`.
@@ -1179,17 +1211,21 @@ fn render_communities_dot(
 ) -> String {
     let ids = community_ids(comms);
     let palette = [
-        "#eef6ff", "#fff0f0", "#f0fff0", "#fffbe6", "#f5f0ff", "#f0ffff",
+        "#dbeafe", "#fce7f3", "#dcfce7", "#fef3c7", "#ede9fe", "#cffafe",
+    ];
+    let border_palette = [
+        "#3b82f6", "#ec4899", "#22c55e", "#f59e0b", "#8b5cf6", "#06b6d4",
     ];
     let mut out = String::from(
-        "digraph communities {\n  rankdir=LR;\n  node [shape=box];\n  compound=true;\n",
+        "digraph communities {\n  rankdir=LR;\n  graph [fontname=\"Helvetica,Arial,sans-serif\", pad=\"0.3\", nodesep=\"0.35\", ranksep=\"0.55\"];\n  node [shape=box, style=\"rounded,filled\", fillcolor=\"#ffffff\", color=\"#94a3b8\", fontname=\"Helvetica,Arial,sans-serif\", fontsize=11];\n  edge [fontname=\"Helvetica,Arial,sans-serif\", fontsize=9, color=\"#64748b\", fontcolor=\"#475569\"];\n  compound=true;\n",
     );
     for (i, c) in comms.iter().enumerate() {
         out.push_str(&format!(
-            "  subgraph cluster_{i} {{\n    label=\"{} ({})\";\n    style=filled;\n    color=\"{}\";\n",
+            "  subgraph cluster_{i} {{\n    label=\"{} ({})\";\n    style=\"rounded,filled\";\n    fillcolor=\"{}\";\n    color=\"{}\";\n",
             c.label.replace('"', "'"),
             c.size,
-            palette[i % palette.len()]
+            palette[i % palette.len()],
+            border_palette[i % border_palette.len()]
         ));
         for m in &c.members {
             out.push_str(&format!(
@@ -1250,6 +1286,7 @@ fn render_communities_mermaid(
             ids[to.as_str()]
         ));
     }
+    out.push_str("  classDef default fill:#1e293b,stroke:#64748b,color:#e2e8f0;\n");
     out
 }
 
@@ -1372,7 +1409,10 @@ fn render_mermaid(
     }
     // Highlight the root so the change origin is obvious.
     out.push_str(&format!("  class {} root;\n", ids[root]));
-    out.push_str("  classDef root fill:#f9a,stroke:#333,stroke-width:2px;\n");
+    out.push_str(
+        "  classDef root fill:#f38ba8,stroke:#1e1e2e,color:#1e1e2e,stroke-width:2.5px,font-weight:bold;\n",
+    );
+    out.push_str("  classDef default fill:#1e293b,stroke:#64748b,color:#e2e8f0;\n");
     out
 }
 
@@ -1382,12 +1422,14 @@ fn render_dot(
     edges: &BTreeSet<(String, String, String)>,
 ) -> String {
     let ids = id_map(nodes);
-    let mut out = String::from("digraph blast {\n  rankdir=LR;\n  node [shape=box];\n");
+    let mut out = String::from(
+        "digraph blast {\n  rankdir=LR;\n  graph [fontname=\"Helvetica,Arial,sans-serif\", pad=\"0.3\", nodesep=\"0.4\", ranksep=\"0.55\"];\n  node [shape=box, style=\"rounded,filled\", fillcolor=\"#f8fafc\", color=\"#94a3b8\", fontname=\"Helvetica,Arial,sans-serif\", fontsize=11];\n  edge [fontname=\"Helvetica,Arial,sans-serif\", fontsize=9, color=\"#64748b\", fontcolor=\"#475569\"];\n",
+    );
     for a in nodes {
         let lbl = label(a).replace('"', "\\\"");
         if a == root {
             out.push_str(&format!(
-                "  {} [label=\"{}\", style=filled, fillcolor=\"#ffaa99\"];\n",
+                "  {} [label=\"{}\", style=filled, fillcolor=\"#ffaa99\", color=\"#e11d48\", penwidth=2];\n",
                 ids[a.as_str()],
                 lbl
             ));
@@ -1419,6 +1461,21 @@ fn render_json(
     proj_root: &Path,
     mode: &str,
 ) -> String {
+    serde_json::to_string_pretty(&render_value(
+        root, nodes, edges, src, graph, proj_root, mode,
+    ))
+    .unwrap_or_else(|_| "{}".to_string())
+}
+
+fn render_value(
+    root: &str,
+    nodes: &BTreeSet<String>,
+    edges: &BTreeSet<(String, String, String)>,
+    src: &SrcMap,
+    graph: &Graph,
+    proj_root: &Path,
+    mode: &str,
+) -> serde_json::Value {
     let ids = id_map(nodes);
     let snippets = if nodes.len() <= SNIPPET_NODE_CAP {
         collect_snippets(src, nodes)
@@ -1479,7 +1536,7 @@ fn render_json(
         .collect();
     let generated_at = now_rfc3339();
     let git_hash = git_head_short(proj_root).unwrap_or_default();
-    serde_json::to_string_pretty(&serde_json::json!({
+    serde_json::json!({
         "root": root,
         "mode": mode,
         "generated_at": generated_at,
@@ -1487,8 +1544,7 @@ fn render_json(
         "blast_radius": nodes.len().saturating_sub(1),
         "nodes": nodes_json,
         "edges": edges_json,
-    }))
-    .unwrap_or_else(|_| "{}".to_string())
+    })
 }
 
 /// Wrap the Mermaid diagram in an asciidoctor-diagram `[mermaid]` block plus a

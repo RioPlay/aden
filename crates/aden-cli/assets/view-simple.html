@@ -9,27 +9,29 @@
 try { if (localStorage.getItem('aden-simple-theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch {}
 </script>
 <style>
-:root { color-scheme:dark; --bg:#11161d; --surface:#171e27; --ink:#dce4ee; --muted:#9aaabd; --line:#344253; --blue:#86baff; --wash:#20354f; --edge:#7f93ac; }
-:root[data-theme="light"] { color-scheme:light; --bg:#fff; --surface:#fafbfc; --ink:#202b38; --muted:#657181; --line:#dce2e8; --blue:#245c9c; --wash:#edf4fc; --edge:#8c9cab; }
+:root { color-scheme:dark; --bg:#0d1117; --surface:#151b23; --surface2:#1b2330; --ink:#e6edf3; --muted:#8b949e; --line:#2d3748; --blue:#6cb6ff; --wash:#1a2e47; --edge:#7f93ac; --grid:rgba(139,148,158,.13); --code:#6cb6ff; --doc:#c084fc; --term:#f59e0b; --other:#2dd4bf; }
+:root[data-theme="light"] { color-scheme:light; --bg:#ffffff; --surface:#f6f8fa; --surface2:#eef2f7; --ink:#1f2328; --muted:#59636e; --line:#d0d7de; --blue:#0969da; --wash:#ddf4ff; --edge:#6e7781; --grid:rgba(99,110,123,.14); --code:#0969da; --doc:#8250df; --term:#bf8700; --other:#0f766e; }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
-body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui,sans-serif; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui,-apple-system,sans-serif; }
 button,input,select { font:inherit; }
-button,select { background:var(--surface); color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:5px 10px; }
-button { cursor:pointer; } button:hover:not(:disabled) { background:var(--wash); }
+button,select { background:var(--surface); color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:5px 10px; }
+button { cursor:pointer; } button:hover:not(:disabled) { background:var(--wash); border-color:var(--blue); }
 button:disabled { opacity:.45; cursor:default; }
 :focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
 a { color:var(--blue); } h1,h2,p { margin:0; } h1 { font-size:20px; line-height:1.35; overflow-wrap:anywhere; }
 h2 { font-size:14px; font-weight:600; } .muted { color:var(--muted); } .small { font-size:12px; }
-header { min-height:58px; padding:12px 22px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; }
-header strong { font-size:17px; } header .muted { flex:1; } header button { white-space:nowrap; }
+header { min-height:58px; padding:12px 22px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; background:var(--surface); }
+header strong { font-size:17px; letter-spacing:-.01em; } header .muted { flex:1; } header button { white-space:nowrap; }
 .layout { display:grid; grid-template-columns:280px minmax(0,1fr); min-height:calc(100vh - 58px); }
 aside { border-right:1px solid var(--line); padding:18px 14px; background:var(--surface); }
 label { display:block; font-size:12px; color:var(--muted); }
-#search { width:100%; padding:8px 10px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:5px; margin:6px 0 10px; }
-#symbols { display:grid; gap:2px; margin:10px 0; max-height:calc(100vh - 240px); overflow:auto; }
-.symbol { text-align:left; border-color:transparent; background:transparent; min-width:0; padding:7px 9px; }
-.symbol span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#search { width:100%; padding:8px 10px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:6px; margin:6px 0 10px; }
+#symbols { display:grid; gap:3px; margin:10px 0; max-height:calc(100vh - 240px); overflow:auto; }
+.symbol { text-align:left; border-color:transparent; background:transparent; min-width:0; padding:7px 9px; border-radius:6px; display:flex; align-items:flex-start; gap:8px; }
+.symbol .sym-body { flex:1; min-width:0; }
+.symbol .sym-dot { width:8px; height:8px; border-radius:50%; margin-top:6px; flex:0 0 auto; }
+.symbol .sym-body span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .symbol.active { background:var(--wash); border-color:var(--blue); color:var(--blue); }
 .pager { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; }
 main { padding:22px 28px 40px; min-width:0; }
@@ -40,23 +42,31 @@ main { padding:22px 28px 40px; min-width:0; }
 .filters { display:flex; flex-wrap:wrap; gap:12px; align-items:end; margin:18px 0 12px; }
 .filters select { display:block; margin-top:4px; }
 .check { display:flex; align-items:center; gap:6px; min-height:34px; color:var(--ink); }
-.diagram { border:1px solid var(--line); border-radius:6px; overflow:auto; background:var(--bg); }
+.diagram { border:1px solid var(--line); border-radius:10px; overflow:auto; background-color:var(--bg); background-image:radial-gradient(circle,var(--grid) 1px,transparent 1px); background-size:20px 20px; box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
 svg { display:block; width:100%; min-width:690px; }
-svg text { font:12px system-ui,sans-serif; fill:var(--ink); }
+svg text { font:12px system-ui,-apple-system,sans-serif; fill:var(--ink); }
+svg .col-head { font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; fill:var(--muted); }
 svg .sub { font-size:10px; fill:var(--muted); }
+svg .edge-path { transition:stroke-width .12s ease, stroke-opacity .12s ease; }
 svg .node { cursor:pointer; } svg .node:focus { outline:none; }
-svg .node:focus rect,svg .node:hover rect { stroke:var(--blue); stroke-width:2; }
-.diagram-footer { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 0 20px; }
+svg .node rect.card { transition:stroke .12s ease, stroke-width .12s ease; }
+svg .node:focus rect.card,svg .node:hover rect.card { stroke:var(--blue); stroke-width:2; }
+.diagram-footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:10px 0 20px; }
+.diagram-legend { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:11px; color:var(--muted); }
+.diagram-legend .leg-item { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border:1px solid var(--line); border-radius:999px; background:var(--surface); }
+.diagram-legend .leg-swatch { width:8px; height:8px; border-radius:50%; }
 .section-head { display:flex; justify-content:space-between; align-items:center; margin:12px 0 8px; }
-.table-wrap { overflow:auto; border-top:1px solid var(--line); }
+.table-wrap { overflow:auto; border:1px solid var(--line); border-radius:8px; }
 table { border-collapse:collapse; width:100%; font-size:12px; }
 th,td { padding:9px 10px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
-th { color:var(--muted); font-weight:500; background:var(--surface); }
-td button { padding:0; border:0; border-radius:0; text-align:left; color:var(--blue); overflow-wrap:anywhere; }
+tbody tr:last-child td { border-bottom:0; }
+th { color:var(--muted); font-weight:600; background:var(--surface); }
+td button { padding:0; border:0; border-radius:0; text-align:left; color:var(--blue); background:transparent; overflow-wrap:anywhere; }
 td .location { display:block; max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rel-pill { display:inline-block; padding:1px 8px; border-radius:999px; border:1px solid var(--line); font-size:11px; font-weight:500; white-space:nowrap; background:var(--surface); }
 #relations tr.selected { background:var(--wash); }
-details { border:1px solid var(--line); border-radius:5px; margin-top:20px; padding:10px 12px; }
-summary { cursor:pointer; font-size:12px; } pre { overflow:auto; font:12px/1.6 ui-monospace,monospace; max-height:260px; }
+details { border:1px solid var(--line); border-radius:8px; margin-top:20px; padding:10px 12px; background:var(--surface); }
+summary { cursor:pointer; font-size:12px; font-weight:600; } pre { overflow:auto; font:12px/1.6 ui-monospace,monospace; max-height:260px; }
 .empty { padding:24px; color:var(--muted); text-align:center; }
 dialog { background:var(--surface); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:24px; max-width:520px; width:calc(100% - 32px); }
 dialog::backdrop { background:#202b3840; } dialog p { margin:10px 0; }
@@ -86,7 +96,7 @@ kbd { font:12px ui-monospace,monospace; background:var(--bg); padding:2px 5px; b
     <label class="check"><input id="structural" type="checkbox" checked>Include Contains / PartOf</label>
   </div>
   <div class="diagram" id="diagram-wrap"><svg id="diagram" role="group" aria-label="Directed relationships of selected symbol"></svg><div id="empty" class="empty" hidden></div></div>
-  <div class="diagram-footer"><span class="small muted">Incoming → selected symbol → outgoing. Select a node to follow it.</span><div class="pager"><button id="graph-prev">Previous</button><span id="graph-page" aria-live="polite"></span><button id="graph-next">Next</button></div></div>
+  <div class="diagram-footer"><div id="diagram-legend" class="diagram-legend"><span class="small muted">Incoming → selected symbol → outgoing. Select a node to follow it.</span></div><div class="pager"><button id="graph-prev">Previous</button><span id="graph-page" aria-live="polite"></span><button id="graph-next">Next</button></div></div>
   <div class="section-head"><h2>Relationships</h2><span id="relation-count" class="small muted" aria-live="polite"></span></div>
   <div class="table-wrap"><table><thead><tr><th>From</th><th>Relationship</th><th>To</th></tr></thead><tbody id="relations"></tbody></table></div>
   <div class="pager" style="margin-top:12px"><button id="rows-prev">Previous rows</button><span id="rows-page"></span><button id="rows-next">Next rows</button></div>
@@ -160,6 +170,35 @@ function pager(prefix, page, length, size) {
   $(prefix + '-prev').disabled = page <= 0; $(prefix + '-next').disabled = page >= pages - 1;
   $(prefix + '-page').textContent = `${page + 1} / ${pages}`;
 }
+const DOC_KINDS = new Set(['Adr','Runbook','Plan','Context','Manifest','Spec','Note']);
+function kindTone(k) {
+  if (k === 'Term') return 'var(--term)';
+  if (DOC_KINDS.has(k)) return 'var(--doc)';
+  if (k) return 'var(--code)';
+  return 'var(--other)';
+}
+const EDGE_TONES_DARK = {
+  Calls: '#6cb6ff', Invokes: '#6cb6ff', Imports: '#39c5cf', Uses: '#39c5cf',
+  Defines: '#c084fc', DefinesTerm: '#c084fc', Implements: '#c084fc', Extends: '#c084fc',
+  References: '#f59e0b', Mentions: '#f59e0b', Documents: '#34d399', Explains: '#34d399',
+  RelatesTo: '#818cf8', Contains: '#8b949e', PartOf: '#8b949e', AssociatedWith: '#94a3b8'
+};
+const EDGE_TONES_LIGHT = {
+  Calls: '#0969da', Invokes: '#0969da', Imports: '#0891b2', Uses: '#0891b2',
+  Defines: '#8250df', DefinesTerm: '#8250df', Implements: '#8250df', Extends: '#8250df',
+  References: '#bf8700', Mentions: '#bf8700', Documents: '#1a7f37', Explains: '#1a7f37',
+  RelatesTo: '#4f46e5', Contains: '#59636e', PartOf: '#59636e', AssociatedWith: '#6e7781'
+};
+function edgeColor(type) {
+  const light = document.documentElement.dataset.theme === 'light';
+  const table = light ? EDGE_TONES_LIGHT : EDGE_TONES_DARK;
+  if (table[type]) return table[type];
+  const fallback = light
+    ? ['#0969da','#8250df','#0891b2','#bf8700','#1a7f37','#cf222e']
+    : ['#6cb6ff','#c084fc','#39c5cf','#f59e0b','#34d399','#ff7b72'];
+  let h = 0; for (let i = 0; i < String(type).length; i++) h = (h * 31 + String(type).charCodeAt(i)) >>> 0;
+  return fallback[h % fallback.length];
+}
 function renderSymbols() {
   $('symbols').replaceChildren();
   const start = symbolPage * PAGE;
@@ -168,9 +207,11 @@ function renderSymbols() {
     el.classList.toggle('active', n.id === current);
     if (n.id === current) el.setAttribute('aria-current','true');
     el.title = n.anchor || n.label || n.id;
+    const dot = document.createElement('span'); dot.className = 'sym-dot'; dot.style.background = kindTone(n.kind);
+    const body = document.createElement('span'); body.className = 'sym-body';
     const title = document.createElement('span'); title.textContent = nameOf(n);
     const detail = document.createElement('span'); detail.className = 'small muted'; detail.textContent = locationOf(n);
-    el.append(title, detail); el.dataset.index = start + offset;
+    body.append(title, detail); el.append(dot, body); el.dataset.index = start + offset;
     if ($('search').value && start + offset === searchSelection) el.style.outline = '1px solid var(--blue)';
     $('symbols').append(el);
   }
@@ -247,32 +288,88 @@ function svg(tag, attrs={}, text) {
 }
 function renderDiagram() {
   const host=$('diagram'); host.replaceChildren();
+  const legEl=$('diagram-legend');
   $('empty').hidden=!!current; host.toggleAttribute('hidden', !current);
-  if(!current) { $('empty').textContent='No symbols in this export.'; pager('graph',0,0,GRAPH_PAGE); return; }
+  if(!current) {
+    $('empty').textContent='No symbols in this export.';
+    if(legEl) legEl.textContent='Incoming → selected symbol → outgoing. Select a node to follow it.';
+    pager('graph',0,0,GRAPH_PAGE); return;
+  }
   const left=inEdges.slice(graphPage*GRAPH_PAGE,(graphPage+1)*GRAPH_PAGE), right=outEdges.slice(graphPage*GRAPH_PAGE,(graphPage+1)*GRAPH_PAGE);
-  const count=Math.max(left.length,right.length,1), height=Math.max(210,count*66+100), centerY=height/2;
+  const count=Math.max(left.length,right.length,1), height=Math.max(240,count*68+96), centerY=height/2;
   host.setAttribute('viewBox',`0 0 1000 ${height}`);
-  const defs=svg('defs'), marker=svg('marker',{id:'arrow',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto-start-reverse'});
-  marker.append(svg('path',{d:'M 0 0 L 10 5 L 0 10 z',fill:'var(--edge)'})); defs.append(marker); host.append(defs);
-  for(const [x,title] of [[30,`Incoming (${inEdges.length})`],[390,'Selected symbol'],[720,`Outgoing (${outEdges.length})`]]) host.append(svg('text',{x,y:28,fill:'#657181'},title));
+  const defs=svg('defs'), markerIds=new Map(), shownTypes=new Map();
+  function markerFor(type) {
+    const color=edgeColor(type);
+    shownTypes.set(type,color);
+    if(!markerIds.has(color)) {
+      const id='arrow-'+markerIds.size;
+      const m=svg('marker',{id,viewBox:'0 0 10 10',refX:8.5,refY:5,markerWidth:5.5,markerHeight:5.5,orient:'auto-start-reverse'});
+      m.append(svg('path',{d:'M 0 1 L 9 5 L 0 9 z',fill:color}));
+      defs.append(m); markerIds.set(color,id);
+    }
+    return {color, marker:`url(#${markerIds.get(color)})`};
+  }
+  host.append(defs);
+  for(const [x,title] of [[24,`Incoming (${inEdges.length})`],[376,'Selected symbol'],[724,`Outgoing (${outEdges.length})`]]) {
+    host.append(svg('text',{x,y:28,class:'col-head'},title));
+  }
   function node(n,x,y,selected=false) {
+    const w=selected?248:252, h=selected?64:48, top=y-h/2;
+    const tone=kindTone(n.kind);
     const g=svg('g',{class:'node',role:'button',tabindex:0,'aria-label':nameOf(n)});
     g.append(svg('title',{},n.anchor || n.label || n.id));
-    g.append(svg('rect',{x,y:y-22,width:250,height:44,rx:4,fill:selected?'var(--wash)':'var(--surface)',stroke:selected?'var(--blue)':'var(--edge)'}));
-    const label=nameOf(n); g.append(svg('text',{x:x+12,y:y-3},label.length>32?label.slice(0,30)+'…':label));
-    const place=locationOf(n); g.append(svg('text',{x:x+12,y:y+14,class:'sub'},place.length>39?'…'+place.slice(-37):place));
+    if(selected) {
+      g.append(svg('rect',{x:x-4,y:top-4,width:w+8,height:h+8,rx:11,fill:'none',stroke:'var(--blue)','stroke-opacity':'0.28','stroke-width':'2'}));
+    }
+    g.append(svg('rect',{class:'card',x,y:top,width:w,height:h,rx:8,fill:selected?'var(--wash)':'var(--surface)',stroke:selected?'var(--blue)':'var(--line)','stroke-width':selected?'1.75':'1.1'}));
+    g.append(svg('rect',{x,y:top,width:4,height:h,rx:2,fill:tone}));
+    const label=nameOf(n), maxChars=selected?26:28;
+    const lblAttrs={x:x+13,y:selected?y-11:y-4,'font-weight':selected?'600':'500'};
+    g.append(svg('text',lblAttrs,label.length>maxChars?label.slice(0,maxChars-1)+'…':label));
+    const place=locationOf(n);
+    g.append(svg('text',{x:x+13,y:selected?y+7:y+14,class:'sub'},place.length>36?'…'+place.slice(-34):place));
+    if(n.kind) {
+      const tag=String(n.kind).slice(0,10);
+      const tw=tag.length*5.8+12;
+      g.append(svg('rect',{x:x+w-tw-8,y:top+7,width:tw,height:15,rx:4,fill:'var(--surface2)',stroke:tone,'stroke-opacity':'0.45','stroke-width':'0.9'}));
+      g.append(svg('text',{x:x+w-8-tw/2,y:top+17.5,'text-anchor':'middle',fill:tone,'font-size':'9.5px','font-weight':'600'},tag));
+    }
+    if(selected) {
+      g.append(svg('text',{x:x+13,y:top+h-8,class:'sub'},`${inEdges.length} in · ${outEdges.length} out`));
+    }
     g.addEventListener('click',()=>selectNode(n.id));
     g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();selectNode(n.id);}});
     host.append(g);
   }
   for(const [items,incoming] of [[left,true],[right,false]]) items.forEach((e,i)=>{
-    const y=72+i*66, x1=incoming?280:640, x2=incoming?390:720, y1=incoming?y:centerY, y2=incoming?centerY:y;
-    host.append(svg('path',{d:`M ${x1} ${y1} C ${(x1+x2)/2} ${y1}, ${(x1+x2)/2} ${y2}, ${x2} ${y2}`,fill:'none',stroke:'var(--edge)','marker-end':'url(#arrow)'}));
-    node(graph.nodes.get(incoming?e.from:e.to),incoming?30:720,y);
-    host.append(svg('text',{x:incoming?42:732,y:y+36,class:'sub'},e.type));
+    const y=74+i*68, x1=incoming?276:624, x2=incoming?376:724, y1=incoming?y:centerY, y2=incoming?centerY:y;
+    const cx=(x1+x2)/2, {color,marker}=markerFor(e.type);
+    const path=svg('path',{class:'edge-path',d:`M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`,fill:'none',stroke:color,'stroke-width':'1.75','stroke-opacity':'0.82','marker-end':marker});
+    host.append(path);
+    const t=incoming?0.34:0.66, mt=1-t;
+    const bx=(mt*mt*mt)*x1 + 3*(mt*mt*t+mt*t*t)*cx + (t*t*t)*x2;
+    const by=(mt*mt*mt+3*mt*mt*t)*y1 + (3*mt*t*t+t*t*t)*y2;
+    const pw=Math.max(38,e.type.length*5.6+12);
+    host.append(svg('rect',{x:bx-pw/2,y:by-8,width:pw,height:16,rx:8,fill:'var(--bg)',stroke:color,'stroke-opacity':'0.5','stroke-width':'1'}));
+    host.append(svg('text',{x:bx,y:by+3.3,'text-anchor':'middle',fill:color,'font-size':'9.5px','font-weight':'600'},e.type));
+    node(graph.nodes.get(incoming?e.from:e.to),incoming?24:724,y);
   });
-  node(graph.nodes.get(current),390,centerY,true);
-  if(!relations.length) host.append(svg('text',{x:500,y:centerY+62,'text-anchor':'middle',class:'sub'},'No relationships match these filters.'));
+  node(graph.nodes.get(current),376,centerY,true);
+  if(!relations.length) host.append(svg('text',{x:500,y:centerY+68,'text-anchor':'middle',class:'sub'},'No relationships match these filters.'));
+  if(legEl) {
+    legEl.replaceChildren();
+    if(shownTypes.size) {
+      for(const [ty,col] of shownTypes) {
+        const chip=document.createElement('span'); chip.className='leg-item';
+        const sw=document.createElement('span'); sw.className='leg-swatch'; sw.style.background=col;
+        chip.append(sw,document.createTextNode(ty)); legEl.append(chip);
+      }
+    } else {
+      const s=document.createElement('span'); s.className='small muted';
+      s.textContent='Incoming → selected symbol → outgoing. Select a node to follow it.'; legEl.append(s);
+    }
+  }
   pager('graph',graphPage,Math.max(inEdges.length,outEdges.length),GRAPH_PAGE);
 }
 function renderRows() {
@@ -281,7 +378,11 @@ function renderRows() {
     const row=document.createElement('tr'); row.dataset.index=rowPage*ROW_PAGE+i;
     row.classList.toggle('selected',Number(row.dataset.index)===rowSelection);
     for(const value of [e.from,null,e.to]) { const cell=document.createElement('td');
-      if(value===null) cell.textContent=e.type; else {
+      if(value===null) {
+        const pill=document.createElement('span'); pill.className='rel-pill';
+        const col=edgeColor(e.type); pill.style.color=col; pill.style.borderColor=col;
+        pill.textContent=e.type; cell.append(pill);
+      } else {
         const n=graph.nodes.get(value), link=button(nameOf(n),()=>selectNode(value));link.title=n.anchor||n.id;cell.append(link);
         const place=document.createElement('span');place.className='small muted location';place.textContent=locationOf(n);place.title=place.textContent;cell.append(place);
       }
@@ -357,6 +458,7 @@ $('theme').addEventListener('click', () => {
   document.documentElement.dataset.theme = theme;
   try { localStorage.setItem('aden-simple-theme', theme); } catch {}
   syncThemeButton();
+  renderSymbols(); renderDiagram(); renderRows();
 });
 syncThemeButton();
 document.addEventListener('keydown',e=>{

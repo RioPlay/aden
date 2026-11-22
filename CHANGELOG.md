@@ -66,6 +66,16 @@ All notable changes to aden are documented here. Format follows
 - Reduce repeated viewer search work with stable rank buckets, bounded result
   selection, reusable 2D search candidates, and cached relationship ordering.
   Preserve result order, full symbol coverage, and navigation state.
+- Accelerate read, `query`, `asm`, `ask`, `grep`, `check`, and source
+  fingerprinting with revision-verified snapshot reads, shared `ask` graph
+  sessions, lazy incoming adjacency, parallel file hashing and doc checking,
+  scoped root caching, and zero-copy symbol span indexing.
+- Polish the Simple, 2D, and 3D graph viewers with refined typography and
+  frosted label pills, pooled 3D additive halos, responsive topbar layout, and
+  cleaner visual hierarchy without sacrificing frame rate.
+- Update Rust 1.90-compatible dependencies in `Cargo.lock` (including
+  `url 2.5.9`, resolving `RUSTSEC-2026-0592`) and eliminate all strict Clippy
+  warnings across the workspace and `aden-lsp`.
 
 ### Fixed
 

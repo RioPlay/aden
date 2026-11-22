@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use aden_graph::Direction;
-use aden_store::GraphStorage;
+use aden_graph::cache::GraphReadSession;
 
 use super::analysis::augment as augment_read_json;
 use crate::types::{AnchorPattern, QueryIntent};
@@ -16,6 +16,9 @@ use crate::util::{
 #[cfg(feature = "watch")]
 use crate::util::{sanitize_anchor, sanitize_source_file};
 use aden_index::SearchResult;
+
+#[path = "query_operation.rs"]
+mod query_operation;
 
 /// Words too common in natural-language questions to be treated as symbol names.
 /// "include", "output", "context", "decide" would match struct/function names
@@ -294,13 +297,14 @@ fn render_risk_boundary_evidence(
 /// in callers, while sanitizers and cleanup helpers commonly live in callees.
 fn risk_boundary_evidence_context(
     path: &Path,
+    reader: &GraphReadSession<'_>,
     anchor: &str,
     budget: usize,
 ) -> Option<(String, Vec<String>)> {
     use aden_core::{EdgeType, NodeType};
     use aden_graph::EdgeRef;
 
-    let graph = aden_graph::cache::build_from_directory_cached(path).ok()?;
+    let graph = reader.full_graph().ok()?;
     let seed = graph.get_index(anchor)?;
     let mut queue = VecDeque::from([(seed, 0usize)]);
     let mut seen = HashSet::new();
@@ -458,6 +462,408 @@ fn prefers_usage_contract_prose(question: &str) -> bool {
     .any(|phrase| lower.contains(phrase))
 }
 
+/// A named implementation detail can be the topic of a guide request. Only
+/// recognize documentation as the requested object, before interpreting the
+/// topic's punctuation or identifiers as signs of a source-code lookup.
+fn guide_topic(question: &str) -> Option<&str> {
+    let mut rest = question.trim_start();
+    let phrasing = rest.trim_end_matches(['?', '.', ' ']);
+    let lower = phrasing.to_ascii_lowercase();
+    if lower.starts_with("where is ") && lower.ends_with(" documented") {
+        let topic = phrasing
+            .get("where is ".len()..phrasing.len().checked_sub(" documented".len())?)?
+            .trim();
+        return (!topic.is_empty()).then_some(topic);
+    }
+    for prefix in ["show me the docs for ", "find the guide for "] {
+        if lower.starts_with(prefix) {
+            return Some(phrasing[prefix.len()..].trim());
+        }
+    }
+    let mut next = || {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (word, tail) = rest.split_at(end);
+        rest = tail.trim_start();
+        word.to_ascii_lowercase()
+    };
+    if !matches!(next().as_str(), "which" | "what") {
+        return None;
+    }
+    let mut noun = next();
+    if matches!(noun.as_str(), "user" | "user-facing" | "official") {
+        noun = next();
+    }
+    let name = noun.trim_end_matches(':');
+    if !matches!(name, "guide" | "manual" | "documentation" | "docs") {
+        return None;
+    }
+    if !noun.ends_with(':')
+        && !matches!(
+            next().as_str(),
+            "explains" | "covers" | "documents" | "describes" | "shows" | "includes"
+        )
+    {
+        return None;
+    }
+    (!rest.is_empty()).then_some(rest)
+}
+
+// Procedural requests can use an authored walkthrough. Preserve the ordinary
+// route for implementation names and when no passage supports the procedure.
+fn procedural_guide_topic(question: &str) -> Option<&str> {
+    let question = question.trim();
+    let prefixes = [
+        "how do i ",
+        "how can i ",
+        "explain how to ",
+        "please explain how to ",
+    ];
+    let topic = prefixes.iter().find_map(|prefix| {
+        let opening = question.get(..prefix.len())?;
+        opening
+            .eq_ignore_ascii_case(prefix)
+            .then(|| &question[prefix.len()..])
+    })?;
+    let verb = topic.split_whitespace().next()?;
+    let implementation = ["implement", "refactor", "debug", "override"]
+        .iter()
+        .any(|v| verb.eq_ignore_ascii_case(v));
+    (!implementation && !has_symbolish_token(topic)).then_some(topic)
+}
+
+fn guide_words(text: &str) -> String {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+// Markdown and AsciiDoc sections can arrive as a single raw Paragraph block.
+// Keep adjacent prose lines together, while keeping code examples and section
+// headings from serving as evidence for a guide request.
+fn guide_paragraphs(text: &str, asciidoc: bool, mut assess: impl FnMut(&str)) {
+    let mut paragraph = String::new();
+    let mut fence: Option<(u8, usize)> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        let marker = line
+            .as_bytes()
+            .first()
+            .copied()
+            .filter(|b| matches!(b, b'`' | b'~' | b'-' | b'.'));
+        let count = marker.map_or(0, |first| line.bytes().take_while(|&b| b == first).count());
+        if let Some((first, width)) = fence {
+            if marker == Some(first) && count >= width && count == line.len() {
+                fence = None;
+            }
+            continue;
+        }
+        let opens = matches!(marker, Some(b'`' | b'~')) && count >= 3
+            || asciidoc && matches!(marker, Some(b'-' | b'.')) && count >= 4 && count == line.len();
+        if opens {
+            fence = marker.map(|first| (first, count));
+        }
+        let heading = line.trim_start_matches(['#', '=']).len() < line.len()
+            && line.trim_start_matches(['#', '=']).starts_with(' ');
+        let reference = line.starts_with("See: <<")
+            || line.starts_with('[') && (line.ends_with(']') || line.ends_with(')'))
+            || line.starts_with("<<") && line.ends_with(">>");
+        if line.is_empty() || opens || heading || reference || line.starts_with(':') {
+            if !paragraph.is_empty() {
+                assess(&paragraph);
+                paragraph.clear();
+            }
+        } else {
+            // Only visible Markdown link text can support a guide question.
+            let mut rest = line;
+            while let Some((visible, destination)) = rest.split_once("](") {
+                paragraph.push_str(visible);
+                let Some((_, next)) = destination.split_once(')') else {
+                    break;
+                };
+                rest = next;
+            }
+            if !rest.contains("](") {
+                paragraph.push_str(rest);
+            }
+            paragraph.push(' ');
+        }
+    }
+    if !paragraph.is_empty() {
+        assess(&paragraph);
+    }
+}
+
+// Search drops negation as a stop word. Keep it when comparing conditions:
+// an active transfer and a transfer that is not active are different states.
+fn condition_tokens<'a>(words: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for word in words {
+        match word {
+            "no" | "not" | "before" | "after" => tokens.push(word.to_owned()),
+            _ => tokens.extend(aden_index::tokenize(word)),
+        }
+    }
+    tokens
+}
+
+// A trailing condition distinguishes questions about the same action under
+// different circumstances. Keep its content words in order for passage ranking.
+fn guide_condition(topic_words: &str) -> Vec<String> {
+    let mut words = topic_words.split_whitespace();
+    if !words.any(|word| matches!(word, "while" | "when" | "if")) {
+        return Vec::new();
+    }
+    let tokens = condition_tokens(words);
+    if tokens.len() >= 2 {
+        tokens
+    } else {
+        Vec::new()
+    }
+}
+
+fn guide_body_support(
+    document: &aden_core::Document,
+    terms: &HashSet<String>,
+    quoted_phrases: &[String],
+    condition: &[String],
+) -> Option<usize> {
+    use aden_core::Block;
+    let mut best = None;
+    let mut assess = |passage: &str| {
+        let words = guide_words(passage);
+        if !quoted_phrases.is_empty() {
+            let padded = format!(" {words} ");
+            if !quoted_phrases.iter().all(|phrase| padded.contains(phrase)) {
+                return;
+            }
+        }
+        let tokens = if condition.is_empty() {
+            aden_index::tokenize(&words)
+        } else {
+            condition_tokens(words.split_whitespace())
+        };
+        let matched: HashSet<_> = tokens.iter().filter(|t| terms.contains(*t)).collect();
+        let count = matched.len();
+        if count >= terms.len().div_ceil(2).clamp(2, 4).min(terms.len()) {
+            let matches_condition = !condition.is_empty()
+                && tokens
+                    .windows(condition.len())
+                    .any(|span| span == condition)
+                && matched.iter().any(|term| !condition.contains(term));
+            let score = count
+                + if matches_condition {
+                    condition.len()
+                } else {
+                    0
+                };
+            best = Some(score.max(best.unwrap_or(0)));
+        }
+    };
+    let asciidoc = document
+        .attributes
+        .get("source_file")
+        .is_some_and(|f| f.ends_with(".adoc") || f.ends_with(".asciidoc"));
+    for (i, block) in document.blocks.iter().enumerate() {
+        if i == 0
+            && document
+                .attributes
+                .get("node-type")
+                .is_some_and(|s| s == "heading")
+        {
+            continue;
+        }
+        match block {
+            Block::Paragraph(text) | Block::Admonition { text, .. } => {
+                guide_paragraphs(text, asciidoc, &mut assess);
+            }
+            Block::DescriptionList(entries) => {
+                for (name, description) in entries {
+                    assess(&format!("{name} {description}"));
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    assess(&row.join(" "));
+                }
+            }
+            Block::Checklist(items) => {
+                for item in items {
+                    assess(&item.text);
+                }
+            }
+            Block::Incomplete { .. } | Block::Listing { .. } => {}
+        }
+    }
+    best
+}
+
+fn route_guide<'a>(
+    idx: &aden_index::Index,
+    topic: &str,
+    procedural: bool,
+    read_session: impl FnOnce() -> &'a GraphReadSession<'a>,
+) -> Option<SearchResult> {
+    let topic_words = guide_words(topic);
+    let terms: HashSet<_> = aden_index::tokenize(&topic_words)
+        .into_iter()
+        .filter(|term| term.len() >= 3)
+        .collect();
+    if terms.is_empty() {
+        return None;
+    }
+    // A quoted label such as `archive-workspace` also occurs in manuals
+    // as rendered UI text. Require that label in the prose itself, since
+    // index matches can come from generated attributes or cross-references.
+    let quoted_phrases: Vec<_> = topic
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(guide_words)
+        .filter(|phrase| !phrase.is_empty())
+        .map(|phrase| format!(" {phrase} "))
+        .collect();
+    let condition = guide_condition(&topic_words);
+    let mut candidates = idx
+        .query(&topic_words)
+        .into_iter()
+        .filter(|result| AnchorPattern::is_prose_doc(&result.anchor) && !is_test_result(result))
+        .take(24)
+        .peekable();
+    candidates.peek()?;
+    let reader = read_session();
+    let best = candidates
+        .filter_map(|result| {
+            let document = reader.document(&result.anchor).ok()??;
+            let score = guide_body_support(&document, &terms, &quoted_phrases, &condition)?;
+            if procedural && score < terms.len().div_ceil(2).max(3) {
+                return None;
+            }
+            Some((score, result))
+        })
+        .reduce(|best, current| if current.0 > best.0 { current } else { best })?;
+    Some(best.1)
+}
+
+#[cfg(test)]
+mod explicit_guide_tests {
+    use super::{guide_body_support, guide_condition, guide_topic, procedural_guide_topic};
+    use aden_core::{Block, Document};
+    use std::collections::HashSet;
+
+    #[test]
+    fn walkthroughs_preserve_named_code_routes() {
+        assert_eq!(
+            procedural_guide_topic("Please explain how to move a tab"),
+            Some("move a tab")
+        );
+        assert_eq!(procedural_guide_topic("How do I call Tab::move_tab?"), None);
+        assert_eq!(procedural_guide_topic("Which function moves a tab?"), None);
+        assert_eq!(
+            procedural_guide_topic("How do I refactor the parser?"),
+            None
+        );
+    }
+
+    #[test]
+    fn condition_needs_ordered_words_and_support_for_the_subject() {
+        let condition = guide_condition("cancel the upload while a transfer is active");
+        let terms = aden_index::tokenize("cancel upload transfer active")
+            .into_iter()
+            .collect();
+        let score = |passage: &str| {
+            let mut doc = Document::default();
+            doc.blocks.push(Block::Paragraph(passage.into()));
+            guide_body_support(&doc, &terms, &[], &condition)
+        };
+        assert_eq!(
+            score("Cancel upload while the transfer is active."),
+            Some(6)
+        );
+        assert_eq!(score("Cancel upload for an active transfer."), Some(4));
+        assert_eq!(score("The transfer is active."), Some(2));
+        assert_eq!(
+            score("Cancel upload if the transfer is not active."),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn recognizes_documentation_as_the_requested_object() {
+        assert_eq!(
+            guide_topic("Where is archive setup documented?"),
+            Some("archive setup")
+        );
+        assert_eq!(
+            guide_topic("Show me the docs for draft mode."),
+            Some("draft mode")
+        );
+        assert_eq!(guide_topic("Where is this function implemented?"), None);
+        assert_eq!(
+            guide_topic("Which user-facing guide explains the `archive-workspace` action?"),
+            Some("the `archive-workspace` action?")
+        );
+        assert_eq!(
+            guide_topic("What documentation: thread retention?"),
+            Some("thread retention?")
+        );
+        for question in [
+            "Which function reads guide.md: parse_guide?",
+            "Which guide parser handles Markdown?",
+            "Which test covers guide.md?",
+            "How does Workspace::archive work?",
+        ] {
+            assert_eq!(guide_topic(question), None, "{question}");
+        }
+    }
+
+    #[test]
+    fn requires_topic_support_in_an_authored_passage() {
+        let terms: HashSet<_> = aden_index::tokenize("archive workspace action")
+            .into_iter()
+            .collect();
+        let mut document = Document::default();
+        document
+            .attributes
+            .insert("doc_mentions".into(), "archive-workspace, action".into());
+        document.blocks.push(Block::Paragraph(
+            "Archive this thread.\n\nThe workspace picker opens.".into(),
+        ));
+        assert_eq!(
+            guide_body_support(&document, &terms, &[" archive workspace ".into()], &[]),
+            None
+        );
+        assert_eq!(guide_body_support(&document, &terms, &[], &[]), None);
+        document.blocks.push(Block::Paragraph(
+            "Choose **Archive\nworkspace** from the action menu.".into(),
+        ));
+        assert_eq!(
+            guide_body_support(&document, &terms, &[" archive workspace ".into()], &[]),
+            Some(3)
+        );
+        let mut navigation = Document::default();
+        navigation
+            .attributes
+            .insert("node-type".into(), "heading".into());
+        navigation
+            .blocks
+            .push(Block::Paragraph("Archive workspace action".into()));
+        navigation.blocks.push(Block::Paragraph("[elsewhere](archive-workspace.md)\nSee: <<archive-workspace>>\n\n```sh\narchive workspace action\n```".into()));
+        assert_eq!(
+            guide_body_support(&navigation, &terms, &[" archive workspace ".into()], &[]),
+            None
+        );
+        let labels = [" archive workspace ".into(), " restore session ".into()];
+        assert_eq!(guide_body_support(&document, &terms, &labels, &[]), None);
+        document.blocks.push(Block::DescriptionList(vec![(
+            "Archive workspace".into(),
+            "Use the Restore session action to undo it.".into(),
+        )]));
+        assert_eq!(guide_body_support(&document, &terms, &labels, &[]), Some(3));
+    }
+}
+
 fn is_definition_lookup(question: &str) -> bool {
     let normalized = question.to_lowercase();
     let classic = ["where is", "defined", "definition", "located", "find the"]
@@ -521,7 +927,7 @@ fn is_selection_implementation_query(question: &str) -> bool {
 
 /// Selection logic often lives one call above the operation named in prose.
 /// Preserve that evidence chain instead of globally boosting all code results.
-fn selection_caller_seeds(path: &Path, results: &[SearchResult]) -> Vec<String> {
+fn selection_caller_seeds(reader: &GraphReadSession<'_>, results: &[SearchResult]) -> Vec<String> {
     use aden_core::{EdgeType, NodeType};
     use aden_graph::EdgeRef;
     let seeds: Vec<_> = results
@@ -535,7 +941,7 @@ fn selection_caller_seeds(path: &Path, results: &[SearchResult]) -> Vec<String> 
     if seeds.is_empty() {
         return Vec::new();
     }
-    let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) else {
+    let Ok(graph) = reader.full_graph() else {
         return Vec::new();
     };
     let mut candidates: std::collections::BTreeMap<String, (usize, usize, Vec<String>)> =
@@ -661,6 +1067,11 @@ fn command_handler_anchors(idx: &aden_index::Index, question: &str) -> Vec<Strin
     for word in words {
         for prefix in ["cmd_", "run_"] {
             let candidate = format!("{prefix}{word}");
+            // Most words in a question have no corresponding command. Only rank
+            // documents if at least one can survive the suffix filter below.
+            if !idx.contains_anchor_suffix(&candidate) {
+                continue;
+            }
             let anchors: Vec<String> = query_index(idx, &candidate)
                 .into_iter()
                 .filter(|result| !is_test_result(result))
@@ -1426,40 +1837,20 @@ fn same_file_canonical_anchor(
 
 /// Incoming `RelatesTo`/`Documents` in-degree for every prose doc anchor — the
 /// live "explanatory importance" signal: heavily-referenced documents are the
-/// pillar overviews a conceptual question wants. The normal path scans only
-/// edge keys and retains target counts; a writer-contended store falls back to
-/// ADR-011's immutable full snapshot.
-fn doc_reference_indegree(path: &Path) -> std::collections::HashMap<String, usize> {
+/// pillar overviews a conceptual question wants. Count edges from the same
+/// store or snapshot used by routing and assembly.
+fn doc_reference_indegree(
+    reader: &GraphReadSession<'_>,
+) -> std::collections::HashMap<String, usize> {
     let edge_types = [
         aden_core::EdgeType::RelatesTo,
         aden_core::EdgeType::Documents,
     ];
-    let (store_path, _) = aden_paths::resolve_read_store(path);
-    if let Some(store_path) = store_path.to_str()
-        && let Ok(storage) = aden_store::Storage::open_existing(store_path)
-        && let Ok(mut counts) = storage.incoming_counts_by_target(&edge_types)
-    {
-        counts.retain(|anchor, _| AnchorPattern::is_prose_doc(anchor));
-        return counts;
-    }
-
-    let mut map = std::collections::HashMap::new();
-    let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) else {
-        return map;
-    };
-    for edge in graph.graph.edge_indices() {
-        if !edge_types.contains(&graph.graph[edge].edge_type) {
-            continue;
-        }
-        let Some((_, target)) = graph.graph.edge_endpoints(edge) else {
-            continue;
-        };
-        let anchor = &graph.graph[target].doc.anchor;
-        if AnchorPattern::is_prose_doc(anchor) {
-            *map.entry(anchor.clone()).or_insert(0) += 1;
-        }
-    }
-    map
+    let mut counts = reader
+        .incoming_counts_by_target(&edge_types)
+        .unwrap_or_default();
+    counts.retain(|anchor, _| AnchorPattern::is_prose_doc(anchor));
+    counts
 }
 
 /// Resolve a natural-language query to the best matching anchor.
@@ -1932,13 +2323,52 @@ impl std::fmt::Display for SymbolResolutionError {
 
 impl std::error::Error for SymbolResolutionError {}
 
-fn resolve_required_anchor(path: &Path, input: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
-    required_anchor_result(
-        path,
-        input,
-        aden_graph::cache::resolve_anchor_detailed(path, input),
-    )
+fn check_publication_revision(
+    expected: Option<&str>,
+    observed: Option<&str>,
+) -> Result<(), &'static str> {
+    if expected.is_some() && expected != observed {
+        return Err("graph publication changed during the command; retry the read");
+    }
+    Ok(())
+}
+
+fn open_verified_read_session(path: &Path) -> (Option<String>, GraphReadSession<'_>) {
+    if aden_graph::snapshot::session_cache_enabled()
+        || std::env::var_os("ADEN_STORE").is_some()
+        || aden_paths::resolve_read_store(path).1
+    {
+        return (None, GraphReadSession::open(path));
+    }
+    if let Some(expected) = crate::indexer::fresh::published_revision(path) {
+        let reader = GraphReadSession::open_for_revision(path, |bytes| {
+            crate::indexer::fresh::snapshot_matches_revision(bytes, &expected)
+        });
+        (Some(expected), reader)
+    } else {
+        (None, GraphReadSession::open(path))
+    }
+}
+
+fn verify_read_publication(path: &Path, expected: Option<&str>) -> Result<(), &'static str> {
+    if expected.is_some() {
+        let observed = crate::indexer::fresh::published_revision(path);
+        check_publication_revision(expected, observed.as_deref())?;
+    }
+    Ok(())
+}
+
+fn augment_verified_read_json(
+    path: &Path,
+    value: serde_json::Value,
+    expected: Option<&str>,
+) -> Result<serde_json::Value, &'static str> {
+    let value = augment_read_json(path, value);
+    check_publication_revision(
+        expected,
+        value["context_receipt"]["graph_revision"].as_str(),
+    )?;
+    Ok(value)
 }
 
 fn required_anchor_result(
@@ -2036,20 +2466,20 @@ fn asks_for_consumer_context(question: &str) -> bool {
     .any(|signal| lower.contains(signal))
 }
 
-fn resolution_advisory(path: &Path, question: &str) -> Option<String> {
+fn resolution_advisory(reader: &GraphReadSession<'_>, question: &str) -> Option<String> {
     use aden_graph::cache::AnchorResolution;
 
     if !asks_about_symbol_recovery(question) {
         return None;
     }
-    symbolish_tokens(question).into_iter().find_map(|input| {
-        match aden_graph::cache::resolve_anchor_detailed(path, &input) {
+    symbolish_tokens(question)
+        .into_iter()
+        .find_map(|input| match reader.resolve_anchor(&input) {
             AnchorResolution::NotFound { suggestions } if !suggestions.is_empty() => {
                 Some(render_not_found_advisory(&input, &suggestions))
             }
             _ => None,
-        }
-    })
+        })
 }
 
 fn prepend_bounded_advisory(body: &str, advisory: &str, budget: usize) -> String {
@@ -2092,22 +2522,28 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     let machine_format = !opts.inspect && matches!(opts.format.as_str(), "adg" | "json");
     let _stale_hint = super::StaleHintGuard::new(&opts.path, opts.strict || machine_format);
 
-    let (from_anchor, effective_budget) = if opts.auto && !opts.strict {
-        let index = load_or_build_index(&opts.path)?;
+    let auto_index = (opts.auto && !opts.strict)
+        .then(|| load_or_build_index(&opts.path))
+        .transpose()?;
+    let (expected_revision, reader, initial_resolution) = {
+        let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
+        let (expected_revision, reader) = open_verified_read_session(&opts.path);
+        let resolution = reader.resolve_anchor(&opts.from);
+        (expected_revision, reader, resolution)
+    };
+    let (from_anchor, effective_budget) = if let Some(index) = auto_index {
         let results = query_index(&index, &opts.from);
-        // Exact-first: if the user passed an anchor that already resolves
-        // exactly in the store, keep it. `--auto` must not fuzzy-re-resolve a
-        // valid anchor onto a thinner doc-shell node — the non-auto path would
-        // have produced full content for the same URI, and silently swapping in
-        // a lower-relevance node is the worst failure mode for an LLM. We only
-        // fall back to fuzzy resolution when the exact anchor is NOT found, and
-        // either way the search results still feed the relevance boost.
-        let resolved =
-            if aden_graph::cache::resolve_anchor_in_store(&opts.path, &opts.from).is_some() {
-                opts.from.clone()
-            } else {
-                resolve_anchor_fuzzy(&opts.from, &results, |a| index.doc_token_count(a))
-            };
+        // Exact anchors and unique natural names both take precedence over
+        // fuzzy routing. The lexical results still feed the budget boost.
+        use aden_graph::cache::AnchorResolution;
+        let resolved = if matches!(
+            initial_resolution,
+            AnchorResolution::Exact(_) | AnchorResolution::Unique { .. }
+        ) {
+            opts.from.clone()
+        } else {
+            resolve_anchor_fuzzy(&opts.from, &results, |a| index.doc_token_count(a))
+        };
         if resolved != opts.from {
             eprintln!("INFO: Resolved '{}' → '{}'", opts.from, resolved);
         }
@@ -2130,19 +2566,25 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     // symbol/module name resolves to a single full anchor by `#suffix` match;
     // unknown/ambiguous is a hard error. We never silently substitute a fuzzy
     // match — emitting an unrelated node is the worst failure mode for an LLM.
-    let resolved_anchor = resolve_required_anchor(&opts.path, &from_anchor)?;
+    let resolution = if from_anchor == opts.from {
+        initial_resolution
+    } else {
+        let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
+        reader.resolve_anchor(&from_anchor)
+    };
+    let resolved_anchor = required_anchor_result(&opts.path, &from_anchor, resolution)?;
 
     // Stream the read path: load only the neighborhood reachable from the start
     // within depth, not the entire graph. At kernel scale a full load OOMs / takes
     // tens of seconds; this fetches just the documents it actually traverses.
-    let graph = aden_graph::cache::build_neighborhood_cached(
-        &opts.path,
-        &resolved_anchor,
-        opts.depth,
-        &opts.edge_types,
-    )?;
+    let graph = {
+        let _trace = crate::read_trace::span(crate::read_trace::Stage::GraphLoad);
+        reader.assembly_neighborhood(&resolved_anchor, opts.depth, &opts.edge_types)?
+    };
+    drop(reader);
 
     if opts.inspect {
+        verify_read_publication(&opts.path, expected_revision.as_deref())?;
         println!("=== Context Assembly Inspection ===");
         println!("Start: {}", resolved_anchor.clone());
         println!("Depth: {}", opts.depth);
@@ -2236,7 +2678,11 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
                 "schema_version": 1,
                 "documents": documents,
             });
-            serde_json::to_string(&augment_read_json(&opts.path, payload))?
+            serde_json::to_string(&augment_verified_read_json(
+                &opts.path,
+                payload,
+                expected_revision.as_deref(),
+            )?)?
         }
         "aden" | "llm" => assemble(&graph, &asm_opts)?,
         _ => {
@@ -2248,9 +2694,24 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    if opts.format != "json" {
+        verify_read_publication(&opts.path, expected_revision.as_deref())?;
+    }
     if let Some(out_path) = &opts.out {
         std::fs::write(out_path, &output)?;
         println!("Written assembly to {}", out_path.display());
+    } else if opts.format == "json" {
+        // JSON is the only asm shape a resident read worker may capture.
+        if opts.strict {
+            crate::read_worker::emit_machine_body_raw(strict_serialized_response(
+                &output,
+                effective_budget,
+            ));
+        } else if opts.silent {
+            crate::read_worker::emit_machine_body_raw(output);
+        } else {
+            crate::read_worker::emit_machine_body(output);
+        }
     } else if opts.strict {
         print!("{}", strict_serialized_response(&output, effective_budget));
     } else if opts.silent {
@@ -2323,14 +2784,14 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
 
     // Resolve exact anchors and unique natural symbol names before loading a
     // graph. Ambiguity is a hard error with deterministic recovery candidates.
-    let (reader, from, backlinks, impact) = {
+    let (expected_revision, reader, from, backlinks, impact) = {
         let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
-        let reader = aden_graph::cache::GraphReadSession::open(path);
+        let (expected_revision, reader) = open_verified_read_session(path);
         let resolve = |input| required_anchor_result(path, input, reader.resolve_anchor(input));
         let from = from.map(resolve).transpose()?;
         let backlinks = backlinks.map(resolve).transpose()?;
         let impact = impact.map(resolve).transpose()?;
-        (reader, from, backlinks, impact)
+        (expected_revision, reader, from, backlinks, impact)
     };
 
     let mut results = Vec::new();
@@ -2565,6 +3026,7 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    drop(graph);
     let relationship = if backlinks.is_some() {
         serde_json::json!({"direction": "incoming", "label": "Used by / potentially affected"})
     } else if from.is_some() {
@@ -2615,6 +3077,7 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
     }
     match format {
         "table" => {
+            verify_read_publication(path, expected_revision.as_deref())?;
             println!("{}", super::analysis::SUMMARY);
             println!(
                 "{} ({})",
@@ -2639,10 +3102,11 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
                 "relationship": relationship,
                 "next_actions": next_actions,
             });
-            let env = augment_read_json(path, payload);
+            let env = augment_verified_read_json(path, payload, expected_revision.as_deref())?;
             crate::read_worker::emit_machine_body(serde_json::to_string_pretty(&env)?);
         }
         _ => {
+            verify_read_publication(path, expected_revision.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&results)?);
         }
     }
@@ -3071,12 +3535,13 @@ fn prepend_provenance_if_fits(response: &str, source: &str, budget: usize) -> St
 /// community.
 fn community_seeds_for(
     path: &Path,
+    reader: &GraphReadSession<'_>,
     anchor: &str,
     question: &str,
     max_seeds: usize,
 ) -> Option<(Vec<String>, String, usize)> {
     let communities = {
-        let graph = aden_graph::cache::build_from_directory_cached(path).ok()?;
+        let graph = reader.full_graph().ok()?;
         aden_graph::community::detect_communities(&graph, 1.0)
     };
     let group = communities
@@ -3099,7 +3564,7 @@ fn community_seeds_for(
     // `tests/`), exactly the [`is_test_result`] caveat.
     let is_test_member = |a: &str| {
         is_test_anchor(a)
-            || anchor_source_file(path, a)
+            || anchor_source_file(reader, a)
                 .map(|f| is_test_source_path(&f))
                 .unwrap_or(false)
     };
@@ -3126,19 +3591,12 @@ fn community_seeds_for(
 /// attribute (best-effort; `None` when the store/document/attribute is absent).
 /// `ask --explain` uses it so a bare doc anchor can be judged by the file it
 /// lives in (e.g. `…#philosophy` → `docs/philosophy.adoc`).
-fn anchor_source_file(path: &Path, anchor: &str) -> Option<String> {
-    // A keyed store projection avoids deserializing a whole graph snapshot for
-    // one source_file attribute. Preserve ADR-011 lock-free reads by falling
-    // back to the immutable snapshot when a concurrent writer owns fjall.
-    let (store_path, _) = aden_paths::resolve_read_store(path);
-    if let Some(store_path) = store_path.to_str()
-        && let Ok(storage) = aden_store::Storage::open_existing(store_path)
-        && let Ok(Some(document)) = storage.get_document(anchor)
-    {
-        return document.attributes.get("source_file").cloned();
-    }
-    aden_graph::snapshot::try_read_fresh(path)
-        .and_then(|(docs, _)| docs.get(anchor)?.attributes.get("source_file").cloned())
+fn anchor_source_file(reader: &GraphReadSession<'_>, anchor: &str) -> Option<String> {
+    reader
+        .document(anchor)
+        .ok()??
+        .attributes
+        .remove("source_file")
 }
 
 /// Routing transparency payload for `ask --explain`: top candidates with the
@@ -3162,7 +3620,7 @@ struct AskExplain {
 /// from real source bodies, not just stored summaries (the store never holds
 /// function bodies).
 struct AskAssembler<'a> {
-    path: &'a Path,
+    reader: &'a GraphReadSession<'a>,
     edge_types: Vec<aden_core::EdgeType>,
     block_filter: Vec<aden_asm::traverse::BlockKind>,
     hydrate_root: PathBuf,
@@ -3182,8 +3640,7 @@ impl AskAssembler<'_> {
     ) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
         use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors_mmr};
         let graph = if with_callers {
-            aden_graph::cache::build_neighborhood_with_callers(
-                self.path,
+            self.reader.assembly_neighborhood_with_callers(
                 seed,
                 seed_depth,
                 &self.edge_types,
@@ -3204,12 +3661,8 @@ impl AskAssembler<'_> {
                 &|a, src| !is_test_anchor(a) && !src.map(is_test_source_path).unwrap_or(false),
             )?
         } else {
-            aden_graph::cache::build_neighborhood_cached(
-                self.path,
-                seed,
-                seed_depth,
-                &self.edge_types,
-            )?
+            self.reader
+                .assembly_neighborhood(seed, seed_depth, &self.edge_types)?
         };
         let opts = AssemblyOptions {
             start_anchor: seed.to_string(),
@@ -3265,8 +3718,8 @@ fn print_ask_explain(
     xp: &AskExplain,
     intent: &QueryIntent,
     intent_was_overridden: bool,
-    path: &Path,
     primary_anchor: &str,
+    primary_source: Option<&str>,
 ) {
     println!("// ── Ask Routing Explain ─────────────────────────");
     println!(
@@ -3292,7 +3745,7 @@ fn print_ask_explain(
     }
     println!("//   Decision : {}", xp.decision);
     println!("//   Fallback : {}", xp.fallback);
-    match anchor_source_file(path, primary_anchor) {
+    match primary_source {
         Some(src) if !src.is_empty() => {
             println!("//   Primary  : {} (source: {})", primary_anchor, src)
         }
@@ -3462,7 +3915,8 @@ pub fn cmd_ask(
 
     super::ensure_fresh(path);
     super::generate::require_graph_ready(path)?;
-    let _stale_hint = super::StaleHintGuard::new(path, strict);
+    let json_context = json_output && model.is_none();
+    let _stale_hint = super::StaleHintGuard::new(path, strict || json_output);
 
     // Intent is classified up front so the overview signal can feed ANCHOR
     // SELECTION (the historical gap: intent only shaped traversal AFTER the
@@ -3483,6 +3937,55 @@ pub fn cmd_ask(
     // those paths assemble exactly as before. When routing is ambiguous they let us
     // seed shallow context from the alternates rather than betting the whole budget
     // on a single, possibly-misranked anchor.
+    let empty_route = |recovery: &[&str],
+                       expected: Option<&str>|
+     -> Result<(), Box<dyn std::error::Error>> {
+        let next_actions: Vec<_> =
+            super::next_actions::tree(path, "Browse indexed source to choose a concrete target")
+                .into_iter()
+                .collect();
+        if json_output {
+            let payload = serde_json::json!({
+                "schema_version": 1,
+                "result_state": "empty",
+                "question": question,
+                "anchor": null,
+                "context": "",
+                "recovery": recovery,
+                "next_actions": next_actions,
+                "strict": strict,
+            });
+            let payload = augment_verified_read_json(path, payload, expected)?;
+            let serialized = serde_json::to_string(&payload)?;
+            if strict && serialized.len() > budget.saturating_mul(4) {
+                print!("{MINIMAL_INCOMPLETE_RECEIPT}");
+            } else {
+                print!("{serialized}");
+            }
+        } else {
+            verify_read_publication(path, expected)?;
+            println!("No relevant documents found for: {question}");
+            println!("Tips:");
+            for tip in recovery {
+                println!("  - {tip}");
+            }
+            super::next_actions::print(&next_actions);
+        }
+        Ok(())
+    };
+    let requested_guide = guide_topic(question);
+    let guide_subject = requested_guide.or_else(|| procedural_guide_topic(question));
+    let idx = from_override
+        .is_none()
+        .then(|| load_or_build_index(path))
+        .transpose()?;
+    let operation_reader = std::cell::OnceCell::new();
+    let read_session = || {
+        &operation_reader
+            .get_or_init(|| open_verified_read_session(path))
+            .1
+    };
+    let mut verified_guide = false;
     let (
         start_anchor,
         avg_score,
@@ -3492,30 +3995,95 @@ pub fn cmd_ask(
         evidence_routed,
         precise_definition_routed,
         exact_symbol_routed,
+        operation_confidence,
     ) = if let Some(anchor) = from_override {
         // An explicit pin is a structural target, not fuzzy question routing.
         // Apply the same exact/unique/ambiguous/suggestion contract as asm and
         // query; never hide a bad pin behind the project-root fallback below.
-        let anchor = resolve_required_anchor(path, anchor)?;
+        let anchor = {
+            let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
+            required_anchor_result(path, anchor, read_session().resolve_anchor(anchor))?
+        };
         xp.decision = "pinned by --from (no search routing)".to_string();
-        (anchor, None, Vec::new(), None, None, false, false, false)
+        (
+            anchor,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            false,
+            false,
+            None,
+        )
+    } else if let Some(guide) = idx
+        .as_ref()
+        .and_then(|idx| route_guide(idx, guide_subject?, requested_guide.is_none(), read_session))
+    {
+        verified_guide = true;
+        xp.decision = "guide passage matched the requested topic".to_string();
+        if explain {
+            xp.candidates = vec![format!("1. * {} (authored prose)", guide.anchor)];
+        }
+        (
+            guide.anchor.clone(),
+            Some(guide.score),
+            Vec::new(),
+            Some(std::collections::HashMap::from([(
+                guide.anchor,
+                guide.score as f32,
+            )])),
+            None,
+            false,
+            false,
+            false,
+            None,
+        )
     } else {
-        let idx = load_or_build_index(path)?;
+        if requested_guide.is_some() {
+            let expected = operation_reader
+                .into_inner()
+                .and_then(|(expected, _)| expected);
+            return empty_route(
+                &[
+                    "The candidate guide passages did not verify this topic and its quoted labels.",
+                    "Search for a distinctive term with aden grep, or pin a known guide with --from.",
+                ],
+                expected.as_deref(),
+            );
+        }
+        let idx = idx.expect("an unpinned question has a search index");
         let lower_question = question.to_lowercase();
         let relationship_query = [" call", "caller", "request path", "impact", "depend"]
             .iter()
             .any(|signal| lower_question.contains(signal));
+        let operation = (!relationship_query
+            && !matches!(intent, QueryIntent::Usage)
+            && !prefers_usage_contract_prose(question))
+        .then(|| query_operation::Operation::parse(question))
+        .flatten();
+        let has_explicit_target = has_symbolish_token(question)
+            && !operation
+                .as_ref()
+                .is_some_and(|operation| operation.passive);
         let exact_anchors = if relationship_query {
             Vec::new()
-        } else if has_symbolish_token(question) {
+        } else if has_explicit_target {
             exact_symbol_anchors(&idx, question)
+        } else if operation.is_some() {
+            // In a passive operation request the named noun is the object,
+            // even when a symbol happens to share its spelling.
+            Vec::new()
         } else {
             // No symbol-like token: a fuzzy natural-language question. Try the
             // handler-convention lookup first (queries naming a CLI command
             // route to its handler, which BM25 prose mentions drown out), then
             // fall back to the general exact-symbol path.
             let exact = exact_symbol_anchors(&idx, question);
-            if exact.is_empty() && !prefers_usage_contract_prose(question) {
+            if exact.is_empty()
+                && !matches!(intent, QueryIntent::Usage)
+                && !prefers_usage_contract_prose(question)
+            {
                 command_handler_anchors(&idx, question)
             } else {
                 exact
@@ -3547,39 +4115,10 @@ pub fn cmd_ask(
                     "Pin an anchor with --from <anchor>.",
                 ]
             };
-            let next_actions: Vec<_> = super::next_actions::tree(
-                path,
-                "Browse indexed source to choose a concrete target",
-            )
-            .into_iter()
-            .collect();
-            if json_output {
-                let payload = serde_json::json!({
-                    "schema_version": 1,
-                    "result_state": "empty",
-                    "question": question,
-                    "anchor": null,
-                    "context": "",
-                "recovery": recovery,
-                "next_actions": next_actions,
-                    "strict": strict,
-                });
-                let payload = augment_read_json(path, payload);
-                let serialized = serde_json::to_string(&payload)?;
-                if strict && serialized.len() > budget.saturating_mul(4) {
-                    print!("{MINIMAL_INCOMPLETE_RECEIPT}");
-                } else {
-                    print!("{serialized}");
-                }
-            } else {
-                println!("No relevant documents found for: {question}");
-                println!("Tips:");
-                for tip in recovery {
-                    println!("  - {tip}");
-                }
-                super::next_actions::print(&next_actions);
-            }
-            return Ok(());
+            let expected = operation_reader
+                .into_inner()
+                .and_then(|(expected, _)| expected);
+            return empty_route(recovery, expected.as_deref());
         }
         let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
 
@@ -3621,7 +4160,7 @@ pub fn cmd_ask(
             // prose result, so scanning every edge would add work with no
             // possible effect on selection.
             let indegree = if query_is_project_identity(question, &results) {
-                doc_reference_indegree(path)
+                doc_reference_indegree(read_session())
             } else {
                 std::collections::HashMap::new()
             };
@@ -3650,7 +4189,14 @@ pub fn cmd_ask(
         // to augment the assembly context.
         let mut prose_bridge: Option<String> = None;
         if AnchorPattern::is_prose_doc(&primary)
-            && let Ok(graph) = aden_graph::cache::build_from_directory_cached(path)
+            && let Ok(graph) = read_session().query_neighborhood(
+                &primary,
+                1,
+                Direction::Outgoing,
+                &[],
+                false,
+                usize::MAX,
+            )
             && let Some(node) = graph.get_index(&primary)
         {
             // Rank outbound code neighbors by how well they answer the
@@ -3695,17 +4241,30 @@ pub fn cmd_ask(
                 }
             }
             if let Some((_, code_anchor)) = best {
-                prose_bridge = aden_graph::cache::resolve_anchor_in_store(path, &code_anchor);
+                prose_bridge = read_session().resolve_anchor(&code_anchor).resolved();
             }
         }
         let exact_routed = !exact_anchors.is_empty();
+        let operation_route = operation.as_ref().and_then(|operation| {
+            (!exact_routed && !overview_promoted && evidence_facet_queries(question).is_empty())
+                .then(|| operation.route(&idx, path, read_session(), &results))
+                .flatten()
+        });
         // A definition-shaped question ("Where is X defined?", "How does X
         // work?" with a symbolish X) that matched NO symbol is a misroute
         // waiting to happen: falling through to fuzzy selection returns the
         // top prose document that merely mentions the term, presented as the
         // answer. Fail small instead — point at the tools that rank
         // candidates and typo suggestions.
-        if !exact_routed && !relationship_query && is_definition_lookup(question) {
+        if !exact_routed
+            && !relationship_query
+            && operation_route.is_none()
+            && (operation.is_none() || has_explicit_target)
+            && is_definition_lookup(question)
+        {
+            let expected = operation_reader
+                .into_inner()
+                .and_then(|(expected, _)| expected);
             let recovery = [
                 "No symbol matched the name in this question.",
                 "Run `aden locate <symbol>` for ranked candidates and typo suggestions.",
@@ -3718,7 +4277,7 @@ pub fn cmd_ask(
             .into_iter()
             .collect();
             if json_output {
-                let payload = augment_read_json(
+                let payload = augment_verified_read_json(
                     path,
                     serde_json::json!({
                         "schema_version": 1,
@@ -3730,7 +4289,8 @@ pub fn cmd_ask(
                     "next_actions": next_actions,
                         "strict": strict,
                     }),
-                );
+                    expected.as_deref(),
+                )?;
                 let serialized = serde_json::to_string(&payload)?;
                 if strict && serialized.len() > budget.saturating_mul(4) {
                     print!("{MINIMAL_INCOMPLETE_RECEIPT}");
@@ -3738,6 +4298,7 @@ pub fn cmd_ask(
                     print!("{serialized}");
                 }
             } else {
+                verify_read_publication(path, expected.as_deref())?;
                 println!("No symbol matched the name in: {question}");
                 println!("Tips:");
                 for tip in recovery {
@@ -3808,11 +4369,15 @@ pub fn cmd_ask(
             Vec::new()
         };
         let selection_seeds = if !precise_routed && is_selection_implementation_query(question) {
-            selection_caller_seeds(path, &results)
+            selection_caller_seeds(read_session(), &results)
         } else {
             Vec::new()
         };
-        let selection_routed = !selection_seeds.is_empty();
+        let selection_routed = selection_seeds.first().is_some_and(|anchor| {
+            operation_route
+                .as_ref()
+                .is_none_or(|route| &route.anchor == anchor)
+        });
         let facet_seeds = if selection_routed {
             selection_seeds
         } else if !prose_facet_seeds.is_empty() {
@@ -3822,7 +4387,12 @@ pub fn cmd_ask(
         } else {
             evidence_facet_seeds(&idx, question)
         };
-        let evidence_routed = facet_seeds.len() >= 2;
+        let evidence_routed =
+            (selection_routed || operation_route.is_none()) && facet_seeds.len() >= 2;
+        let operation_confidence = operation_route
+            .as_ref()
+            .map(|route| route.confidence)
+            .or_else(|| (operation.is_some() && !precise_routed).then_some("ambiguous"));
         let alts = if evidence_routed {
             primary = facet_seeds[0].clone();
             xp.decision = if selection_routed {
@@ -3840,6 +4410,10 @@ pub fn cmd_ask(
                 a.insert(0, bridge);
             }
             a
+        } else if let Some(route) = operation_route {
+            primary = route.anchor;
+            xp.decision = route.reason.to_string();
+            route.support
         } else if precise_routed {
             let mut a: Vec<String> = exact_alternates.into_iter().take(2).collect();
             if let Some(bridge) = prose_bridge
@@ -3861,7 +4435,12 @@ pub fn cmd_ask(
         };
         // Decide the honest low-confidence note here, where we know whether the
         // alternates are a genuine near-tie or the deliberate overview bypass.
-        let routing_note = if alts.is_empty() {
+        let routing_note = if operation_confidence == Some("ambiguous") && !evidence_routed {
+            Some(
+                "// note: routing ambiguous — the requested operation is not uniquely supported by the retrieved candidates."
+                    .to_string(),
+            )
+        } else if operation_confidence == Some("clear") || alts.is_empty() {
             None
         } else if evidence_routed {
             Some(format!(
@@ -3906,6 +4485,7 @@ pub fn cmd_ask(
             evidence_routed,
             exact_routed && is_definition_lookup(question),
             exact_routed,
+            operation_confidence,
         )
     };
 
@@ -3930,22 +4510,7 @@ pub fn cmd_ask(
         _ => budget,
     };
 
-    // `--strict` caps the complete response, not merely the assembled body.
-    // Routing chrome is useful interactively but is outside the assembler's
-    // accounting, so it must stay out of strict output.
-    if explain && !strict && !json_output {
-        println!("// Aden Ask: '{}' → [[{}]]", question, start_anchor);
-        if from_override.is_some() {
-            println!("// (pinned by --from)");
-        }
-        // Honest low-confidence signal in the MAIN output (not just --explain),
-        // decided at routing time so it distinguishes a genuine near-tie from a
-        // deliberate overview pick (see `routing_note`).
-        if let Some(note) = &routing_note {
-            println!("{note}");
-        }
-        println!();
-    }
+    let explained_route = (explain && !strict && !json_output).then(|| start_anchor.clone());
 
     // Step 2: Route assembly strategy from the (already classified) intent.
     // Any of intent, depth, or edge types may be pinned by the caller to bypass
@@ -3959,39 +4524,23 @@ pub fn cmd_ask(
         }
     });
 
-    let strategy_label = if intent_was_overridden {
-        format!("{:?} (override)", intent)
-    } else {
-        format!("{:?}", intent)
-    };
-
-    if explain && !strict && !json_output {
-        println!(
-            "// Strategy: {} | Depth: {} | Edges: {:?}",
-            strategy_label,
-            depth,
-            edge_types
-                .iter()
-                .map(|e| format!("{:?}", e))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        println!();
-    }
-
     // Step 3: Resolve the starting anchor against the store (no full-graph
     // load). Explicit --from pins were already resolved above. If a
     // search-derived anchor cannot be resolved, fall back to the deterministic
     // project root rather than a random node, so the agent gets a coherent
     // overview.
+    let resolve_routed_anchor = |candidate: &str| {
+        let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
+        read_session().resolve_anchor(candidate).resolved()
+    };
     let start_anchor = if from_override.is_some() {
-        // Already canonicalized by resolve_required_anchor above.
+        // Already canonicalized by the explicit pin above.
         start_anchor
     } else {
-        match aden_graph::cache::resolve_anchor_in_store(path, &start_anchor) {
+        match resolve_routed_anchor(&start_anchor) {
             Some(a) => a,
             None => {
-                if aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some() {
+                if resolve_routed_anchor("mod-project").is_some() {
                     if explain {
                         eprintln!(
                             "NOTE: '{}' is not a graph anchor; using project root 'mod-project'.",
@@ -4023,7 +4572,7 @@ pub fn cmd_ask(
         let mut seen = vec![start_anchor.clone()];
         let mut out = Vec::new();
         for cand in &alt_candidates {
-            if let Some(a) = aden_graph::cache::resolve_anchor_in_store(path, cand)
+            if let Some(a) = resolve_routed_anchor(cand)
                 && !seen.contains(&a)
             {
                 seen.push(a.clone());
@@ -4048,7 +4597,7 @@ pub fn cmd_ask(
     // Bundle the per-`ask` invariants so the thin-stub escalation ladder can
     // re-assemble a seed many ways without re-threading them (see AskAssembler).
     let asm = AskAssembler {
-        path,
+        reader: read_session(),
         edge_types: edge_types.clone(),
         block_filter: block_filter.clone(),
         hydrate_root: hydrate_root.clone(),
@@ -4129,13 +4678,17 @@ pub fn cmd_ask(
     // the floor — otherwise the routed anchor is kept with an explicit NOTE.
     let (assembled, start_anchor) = {
         let est = primary_text.len().div_ceil(4);
-        if est < THIN_STUB_TOKEN_THRESHOLD && AnchorPattern::is_prose_doc(&start_anchor) {
+        if est < THIN_STUB_TOKEN_THRESHOLD
+            && !verified_guide
+            && from_override.is_none()
+            && AnchorPattern::is_prose_doc(&start_anchor)
+        {
             // Broaden WITHIN the document, never away from it: the routed file
             // IS the answer; the canonical (most cross-referenced) same-file
             // anchor sits in the prose reference web and assembles connected
             // context where a bare heading shell yields ~17 tokens. Used only
             // when it actually assembles more than the shell did.
-            let broadened = same_file_canonical_anchor(&start_anchor, &doc_reference_indegree(path))
+            let broadened = same_file_canonical_anchor(&start_anchor, &doc_reference_indegree(read_session()))
                 .and_then(|(canon, d)| {
                     let body = asm.assemble_seed(&canon, depth, effective_budget).ok()?;
                     if body.len().div_ceil(4) <= est {
@@ -4254,7 +4807,7 @@ pub fn cmd_ask(
                 // charged against the budget before assembling each member, so
                 // the combined body stays within it.
                 let supplemented = if from_override.is_none() && expand {
-                    community_seeds_for(path, &start_anchor, question, 3).and_then(
+                    community_seeds_for(path, read_session(), &start_anchor, question, 3).and_then(
                         |(seeds, label, n)| {
                             let mut combined = best_body.clone();
                             let mut used = combined.len().div_ceil(4);
@@ -4350,7 +4903,7 @@ pub fn cmd_ask(
     let source_file = std::cell::OnceCell::new();
     let final_source_file = || {
         source_file
-            .get_or_init(|| anchor_source_file(path, &start_anchor))
+            .get_or_init(|| anchor_source_file(read_session(), &start_anchor))
             .as_deref()
     };
 
@@ -4391,7 +4944,7 @@ pub fn cmd_ask(
     // contract without changing the chosen anchor or traversing a suggestion.
     // Put the advisory first so a tight strict budget cannot trim away the
     // safety boundary while retaining lower-priority context.
-    let assembled = resolution_advisory(path, question)
+    let assembled = resolution_advisory(read_session(), question)
         .map(|advisory| prepend_bounded_advisory(&assembled, &advisory, effective_budget))
         .unwrap_or(assembled);
 
@@ -4402,23 +4955,60 @@ pub fn cmd_ask(
     let boundary_evidence = ((from_override.is_some() || exact_symbol_routed)
         && !AnchorPattern::is_prose_doc(&start_anchor)
         && asks_for_risk_boundary_evidence(question))
-    .then(|| risk_boundary_evidence_context(path, &start_anchor, effective_budget))
+    .then(|| risk_boundary_evidence_context(path, read_session(), &start_anchor, effective_budget))
     .flatten();
     let boundary_routed = boundary_evidence.is_some();
     let (assembled, boundary_supporting) =
         boundary_evidence.unwrap_or_else(|| (assembled, Vec::new()));
 
+    let final_source_file = (json_context || strict).then(final_source_file).flatten();
+    let primary_source = (explain && (model.is_some() || (!strict && !json_output)))
+        .then(|| anchor_source_file(read_session(), &primary_anchor))
+        .flatten();
+    let (expected_revision, reader) = operation_reader
+        .into_inner()
+        .expect("ask assembly uses the graph read session");
+    drop(reader);
+    if !json_context {
+        verify_read_publication(path, expected_revision.as_deref())?;
+    }
+    if let Some(routed_anchor) = explained_route {
+        println!("// Aden Ask: '{}' → [[{}]]", question, routed_anchor);
+        if from_override.is_some() {
+            println!("// (pinned by --from)");
+        }
+        if let Some(note) = &routing_note {
+            println!("{note}");
+        }
+        let strategy_label = if intent_was_overridden {
+            format!("{:?} (override)", intent)
+        } else {
+            format!("{:?}", intent)
+        };
+        println!(
+            "\n// Strategy: {} | Depth: {} | Edges: {:?}\n",
+            strategy_label, depth, edge_types_str
+        );
+    }
+
     // Step 4: Send to LLM or print raw context. Strict stdout is bounded body
     // plus an opportunistic source header only when existing headroom pays for it.
     if let Some(model_spec) = model {
+        let _model_stale_hint = json_output.then(|| super::StaleHintGuard::new(path, false));
         if explain {
-            print_ask_explain(&xp, &intent, intent_was_overridden, path, &primary_anchor);
+            print_ask_explain(
+                &xp,
+                &intent,
+                intent_was_overridden,
+                &primary_anchor,
+                primary_source.as_deref(),
+            );
             println!("// ────────────────────────────────────────────────");
         }
         query_llm(model_spec, question, &assembled, &start_anchor)?;
     } else if json_output {
         let context = if strict {
-            final_source_file()
+            final_source_file
                 .map(|source| prepend_provenance_if_fits(&assembled, source, effective_budget))
                 .map(|body| strict_serialized_response(&body, effective_budget))
                 .unwrap_or_else(|| strict_serialized_response(&assembled, effective_budget))
@@ -4429,13 +5019,19 @@ pub fn cmd_ask(
             "pinned"
         } else if evidence_routed || boundary_routed {
             "multi_anchor"
-        } else if resolved_alts.is_empty() {
-            "clear"
+        } else if let Some(confidence) = operation_confidence {
+            confidence
         } else if routing_note
             .as_deref()
             .is_some_and(|note| note.contains("overview routing"))
         {
             "overview"
+        } else if exact_symbol_routed
+            && (precise_definition_routed || explicit_symbol_token(question).is_some())
+            && start_anchor == primary_anchor
+            && resolved_alts.is_empty()
+        {
+            "clear"
         } else {
             "ambiguous"
         };
@@ -4454,7 +5050,7 @@ pub fn cmd_ask(
         } else {
             Vec::new()
         };
-        let payload = augment_read_json(
+        let payload = augment_verified_read_json(
             path,
             serde_json::json!({
                 "schema_version": 1,
@@ -4463,7 +5059,7 @@ pub fn cmd_ask(
                 "question_fit": "bounded",
                 "routing_confidence": routing_confidence,
                 "anchor": start_anchor,
-                "source_file": final_source_file(),
+                "source_file": final_source_file,
                 "context": context,
                 "intent": format!("{:?}", intent).to_lowercase(),
                 "depth": depth,
@@ -4479,7 +5075,8 @@ pub fn cmd_ask(
                     "primary_anchor": primary_anchor,
                 })),
             }),
-        );
+            expected_revision.as_deref(),
+        )?;
         if strict {
             let max_bytes = effective_budget.saturating_mul(4);
             let full = serde_json::to_string(&payload)?;
@@ -4530,7 +5127,7 @@ pub fn cmd_ask(
     } else if strict {
         // Assembly normally maintains this invariant. The final serializer
         // protects the public boundary from future receipts/supplements.
-        let strict_body = final_source_file()
+        let strict_body = final_source_file
             .map(|source| prepend_provenance_if_fits(&assembled, source, effective_budget))
             .unwrap_or_else(|| assembled.clone());
         print!(
@@ -4588,7 +5185,13 @@ pub fn cmd_ask(
         println!("{}", assembled);
         println!();
         if explain {
-            print_ask_explain(&xp, &intent, intent_was_overridden, path, &primary_anchor);
+            print_ask_explain(
+                &xp,
+                &intent,
+                intent_was_overridden,
+                &primary_anchor,
+                primary_source.as_deref(),
+            );
         }
         println!("// ────────────────────────────────────────────────");
         println!("// Aden Ask Summary");

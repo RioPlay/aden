@@ -345,7 +345,10 @@ fn discover_source_files(
         .filter_entry(|e| {
             e.path()
                 .strip_prefix(path)
-                .map(|rel| rel.as_os_str().is_empty() || !filter.should_skip(rel))
+                .map(|rel| {
+                    rel.as_os_str().is_empty()
+                        || filter.should_descend(rel, e.file_type().is_dir().then_some(e.path()))
+                })
                 .unwrap_or(true)
         })
         .filter_map(|e| e.ok())

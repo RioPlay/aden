@@ -3,7 +3,9 @@
 
 //! Bounded project source access for direct reads and graph-backed evidence.
 
-use crate::filter::{AdenFilter, content_has_high_confidence_secret, is_secret_path};
+use crate::filter::{
+    AdenFilter, content_has_high_confidence_secret, is_nested_repository, is_secret_path,
+};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
@@ -39,7 +41,7 @@ pub fn read_direct_source(
             "Project directory is unavailable",
         ));
     }
-    let reader = ProjectSourceReader::new(root.canonicalize()?)?;
+    let reader = ProjectSourceReader::new(root.canonicalize()?, false)?;
     let (real_path, content) = reader.read(file, false)?;
     Ok((reader.root, real_path, content))
 }
@@ -54,11 +56,20 @@ pub struct StoredSourceReader {
 
 impl StoredSourceReader {
     pub fn new(root: &Path) -> io::Result<Self> {
+        Self::with_nested_repo_policy(root, false)
+    }
+
+    /// Read evidence within one checkout, excluding separate nested repositories.
+    pub fn within_checkout(root: &Path) -> io::Result<Self> {
+        Self::with_nested_repo_policy(root, true)
+    }
+
+    fn with_nested_repo_policy(root: &Path, exclude_nested_repos: bool) -> io::Result<Self> {
         let canonical = root.canonicalize()?;
         let canonical_spelling = aden_paths::strip_verbatim(&canonical);
         let supplied_spelling = aden_paths::strip_verbatim(&std::path::absolute(root)?);
         Ok(Self {
-            reader: ProjectSourceReader::new(canonical)?,
+            reader: ProjectSourceReader::new(canonical, exclude_nested_repos)?,
             canonical_spelling,
             supplied_spelling,
         })
@@ -87,10 +98,11 @@ struct ProjectSourceReader {
     root: PathBuf,
     filter: AdenFilter,
     project_policy: Option<(PathBuf, AdenFilter)>,
+    exclude_nested_repos: bool,
 }
 
 impl ProjectSourceReader {
-    fn new(root: PathBuf) -> io::Result<Self> {
+    fn new(root: PathBuf, exclude_nested_repos: bool) -> io::Result<Self> {
         let policy_root = aden_paths::resolve_root(&root).canonicalize()?;
         let project_policy = (policy_root != root).then(|| {
             let filter = AdenFilter::from_directory(&policy_root);
@@ -101,6 +113,7 @@ impl ProjectSourceReader {
             root,
             filter,
             project_policy,
+            exclude_nested_repos,
         })
     }
 
@@ -122,7 +135,13 @@ impl ProjectSourceReader {
                     (reject_secrets && is_secret_path(relative))
                         || relative
                             .ancestors()
-                            .any(|part| !part.as_os_str().is_empty() && filter.should_skip(part))
+                            .take_while(|part| !part.as_os_str().is_empty())
+                            .any(|part| {
+                                filter.should_skip(part)
+                                    || (self.exclude_nested_repos
+                                        && part != relative
+                                        && is_nested_repository(&base.join(part)))
+                            })
                 })
             })
         };

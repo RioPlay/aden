@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::indexer::generation_job;
-use crate::util::{discover_source_files, find_project_root};
+use crate::util::{discover_source_files_with_relative, find_project_root};
+use rayon::prelude::*;
 
 /// How aggressively a read path waits for an in-flight refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -163,45 +164,103 @@ fn stable_hex(parts: impl IntoIterator<Item = (String, Vec<u8>)>) -> String {
     hash.finish_hex()
 }
 
+/// Maximum single-file size read into memory on a worker thread during
+/// fingerprinting; larger files stream on the main thread to bound peak RAM.
+const FINGERPRINT_INLINE_MAX_BYTES: u64 = 1024 * 1024;
+/// Number of files dispatched per parallel batch.
+const FINGERPRINT_BATCH_SIZE: usize = 32;
+
+enum FingerprintedBody {
+    Loaded { meta_len: u64, bytes: Vec<u8> },
+    Stream { meta_len: u64, file: std::fs::File },
+}
+
+struct FingerprintedEntry<'a> {
+    c_config: Option<String>,
+    relative: &'a str,
+    body: FingerprintedBody,
+}
+
 /// Content-addressed tree fingerprint. Paths and bytes are both included, so
 /// same-second edits, rename/delete, and equal-sized rewrites cannot look fresh.
-/// Files are hashed in bounded chunks to avoid a second whole-source allocation.
+/// Files are read in bounded parallel batches, and files larger than 1 MiB
+/// stream on the main thread so peak RAM stays bounded.
 pub(crate) fn source_fingerprint(root: &Path) -> std::io::Result<String> {
     let mut trace = crate::read_trace::span(crate::read_trace::Stage::Fingerprint);
-    let mut sources = discover_source_files(root)
+    let mut sources = discover_source_files_with_relative(root)
         .map_err(|e| std::io::Error::other(format!("source discovery failed: {e}")))?;
-    sources.sort();
+    sources.sort_by(|a, b| a.0.cmp(&b.0));
     let mut hash = StableFnv::new();
     let mut buffer = [0_u8; 64 * 1024];
-    let relative_root = aden_paths::RelativeRoot::new(root);
-    for source in sources {
-        if matches!(source.extension().and_then(|e| e.to_str()), Some("c" | "h")) {
-            let config = aden_parse::macro_declarations::config_fingerprint(&source)
-                .map_err(|_| std::io::Error::other("cannot fingerprint C macro configuration"))?;
-            hash.write_len(config.len() as u64);
-            hash.write(config.as_bytes());
-        }
-        // Windows-safe relative key (git root vs \\?\ canonicalize).
-        let relative = relative_root
-            .relative_to(&source)
-            .unwrap_or_else(|| source.strip_prefix(root).unwrap_or(&source).to_path_buf());
-        let relative = crate::util::normalize_sep(&relative);
-        hash.write_len(relative.len() as u64);
-        hash.write(relative.as_bytes());
+    for chunk in sources.chunks(FINGERPRINT_BATCH_SIZE) {
+        let batch: Vec<FingerprintedEntry<'_>> = chunk
+            .par_iter()
+            .map(
+                |(source, relative)| -> std::io::Result<FingerprintedEntry<'_>> {
+                    let c_config =
+                        if matches!(source.extension().and_then(|e| e.to_str()), Some("c" | "h")) {
+                            Some(
+                                aden_parse::macro_declarations::config_fingerprint(source)
+                                    .map_err(|_| {
+                                        std::io::Error::other(
+                                            "cannot fingerprint C macro configuration",
+                                        )
+                                    })?,
+                            )
+                        } else {
+                            None
+                        };
 
-        // A source we cannot read cannot authoritatively match an old manifest.
-        // Propagate the error so every caller fails closed rather than hashing a
-        // stable synthetic error marker as if it were indexed content.
-        let mut reader = std::fs::File::open(&source)?;
-        trace.scanned_file();
-        hash.write_len(reader.metadata()?.len());
-        loop {
-            let read = reader.read(&mut buffer)?;
-            if read == 0 {
-                break;
+                    // A source we cannot read cannot authoritatively match an old manifest.
+                    // Propagate the error so every caller fails closed rather than hashing a
+                    // stable synthetic error marker as if it were indexed content.
+                    let mut reader = std::fs::File::open(source)?;
+                    let meta_len = reader.metadata()?.len();
+                    let body = if meta_len <= FINGERPRINT_INLINE_MAX_BYTES {
+                        let mut bytes = Vec::with_capacity(meta_len as usize);
+                        reader.read_to_end(&mut bytes)?;
+                        FingerprintedBody::Loaded { meta_len, bytes }
+                    } else {
+                        FingerprintedBody::Stream {
+                            meta_len,
+                            file: reader,
+                        }
+                    };
+                    Ok(FingerprintedEntry {
+                        c_config,
+                        relative: relative.as_str(),
+                        body,
+                    })
+                },
+            )
+            .collect::<std::io::Result<Vec<_>>>()?;
+
+        for entry in batch {
+            if let Some(config) = entry.c_config {
+                hash.write_len(config.len() as u64);
+                hash.write(config.as_bytes());
             }
-            hash.write(&buffer[..read]);
-            trace.scanned_bytes(read);
+            hash.write_len(entry.relative.len() as u64);
+            hash.write(entry.relative.as_bytes());
+            trace.scanned_file();
+            match entry.body {
+                FingerprintedBody::Loaded { meta_len, bytes } => {
+                    hash.write_len(meta_len);
+                    hash.write(&bytes);
+                    trace.scanned_bytes(bytes.len());
+                }
+                FingerprintedBody::Stream { meta_len, mut file } => {
+                    hash.write_len(meta_len);
+                    loop {
+                        let read = file.read(&mut buffer)?;
+                        if read == 0 {
+                            break;
+                        }
+                        hash.write(&buffer[..read]);
+                        trace.scanned_bytes(read);
+                    }
+                }
+            }
         }
     }
     Ok(hash.finish_hex())
@@ -706,6 +765,7 @@ fn wait_for_refresh_or_timeout(root: &Path, budget: Duration) {
 #[cfg(test)]
 mod skip_auto_gen_tests {
     use super::*;
+    use crate::util::discover_source_files;
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -768,6 +828,63 @@ mod skip_auto_gen_tests {
             .collect();
 
         assert_eq!(source_fingerprint(dir.path()).unwrap(), stable_hex(records));
+    }
+
+    #[test]
+    fn parallel_source_fingerprint_matches_sequential_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/nested/deep")).unwrap();
+        std::fs::create_dir_all(root.join("include")).unwrap();
+        std::fs::write(root.join("src/empty.rs"), b"").unwrap();
+        std::fs::write(root.join("src/nested/deep/mod.rs"), b"pub fn deep() {}\n").unwrap();
+        std::fs::write(root.join("include/api.h"), b"#define API_VER 1\n").unwrap();
+        std::fs::write(
+            root.join("src/nested/impl.c"),
+            b"#include \"api.h\"\nint run(void) { return API_VER; }\n",
+        )
+        .unwrap();
+        let medium = format!("// {}\n", "m".repeat(90 * 1024));
+        std::fs::write(root.join("src/medium.rs"), medium.as_bytes()).unwrap();
+        // Exercise the >1 MiB streaming fallback branch alongside inline batches.
+        let streamed = format!("// {}\n", "s".repeat(1024 * 1024 + 128));
+        std::fs::write(root.join("src/streamed.rs"), streamed.as_bytes()).unwrap();
+
+        // Sequential reference matching the original algorithm byte-for-byte.
+        let mut sources = discover_source_files(root).unwrap();
+        sources.sort();
+        let mut expected_hash = StableFnv::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let relative_root = aden_paths::RelativeRoot::new(root);
+        for source in sources {
+            if matches!(source.extension().and_then(|e| e.to_str()), Some("c" | "h")) {
+                let config = aden_parse::macro_declarations::config_fingerprint(&source).unwrap();
+                expected_hash.write_len(config.len() as u64);
+                expected_hash.write(config.as_bytes());
+            }
+            let relative = relative_root
+                .relative_to(&source)
+                .unwrap_or_else(|| source.strip_prefix(root).unwrap_or(&source).to_path_buf());
+            let relative = crate::util::normalize_sep(&relative);
+            expected_hash.write_len(relative.len() as u64);
+            expected_hash.write(relative.as_bytes());
+
+            let mut reader = std::fs::File::open(&source).unwrap();
+            expected_hash.write_len(reader.metadata().unwrap().len());
+            loop {
+                let read = reader.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                expected_hash.write(&buffer[..read]);
+            }
+        }
+        let expected = expected_hash.finish_hex();
+        let actual = source_fingerprint(root).unwrap();
+
+        assert_eq!(actual.len(), 16);
+        assert!(actual.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(actual, expected);
     }
 
     #[test]

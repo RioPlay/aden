@@ -345,14 +345,13 @@ impl<'a> GraphReadSession<'a> {
         Storage::open_existing(path).map_err(|error| error.to_string())
     }
 
-    /// For a project with a published revision, prefer its verified small
-    /// snapshot. Never retry a rejected snapshot through an unchecked path.
+    /// For a project with a published revision, prefer its verified small or
+    /// store-backed view. Never fall back through an unchecked snapshot read.
     pub fn open_for_revision(dir: &'a Path, matches_revision: impl FnOnce(&[u8]) -> bool) -> Self {
         let path = aden_paths::graph_snapshot_file(dir);
         let source = match snapshot::read_small_verified(&path, matches_revision) {
             Ok(Some(data)) => ReadSource::Snapshot(data),
-            Ok(None) => return Self::open(dir),
-            Err(_) => match Self::open_store(dir) {
+            Ok(None) | Err(_) => match Self::open_store(dir) {
                 Ok(storage) => ReadSource::Store(storage),
                 Err(error) => ReadSource::Unavailable(error),
             },
@@ -567,6 +566,19 @@ impl<'a> GraphReadSession<'a> {
         depth: usize,
         edge_types: &[EdgeType],
     ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+        self.assembly_neighborhood_with_callers(start, depth, edge_types, &[], &|_, _| true)
+    }
+
+    /// Reuses this request's store or snapshot while folding filtered incoming
+    /// callers onto the seed, matching [`build_neighborhood_with_callers`].
+    pub fn assembly_neighborhood_with_callers(
+        &self,
+        start: &str,
+        depth: usize,
+        edge_types: &[EdgeType],
+        caller_types: &[EdgeType],
+        caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
+    ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
         match &self.source {
             ReadSource::Store(storage) => build_neighborhood_from_storage(
                 storage,
@@ -574,33 +586,107 @@ impl<'a> GraphReadSession<'a> {
                 start,
                 depth,
                 edge_types,
-                &[],
-                &|_, _| true,
+                caller_types,
+                caller_filter,
             ),
             ReadSource::Snapshot((docs, _)) => build_neighborhood_from_adjacency(
                 docs,
                 self.snapshot_adjacency(crate::Direction::Outgoing),
-                Vec::new(),
+                filtered_incoming(start, caller_types, || {
+                    self.snapshot_adjacency(crate::Direction::Incoming)
+                }),
                 self.dir,
                 start,
                 depth,
                 edge_types,
-                &[],
-                &|_, _| true,
+                caller_types,
+                caller_filter,
             ),
             ReadSource::SharedSnapshot(snapshot) => build_neighborhood_from_adjacency(
                 &snapshot.data.0,
                 snapshot.adjacency(crate::Direction::Outgoing),
-                Vec::new(),
+                filtered_incoming(start, caller_types, || {
+                    snapshot.adjacency(crate::Direction::Incoming)
+                }),
                 self.dir,
                 start,
                 depth,
                 edge_types,
-                &[],
-                &|_, _| true,
+                caller_types,
+                caller_filter,
             ),
             ReadSource::Unavailable(error) => Err(crate::graph::GraphError::Io(error.clone())),
         }
+    }
+
+    /// Load the complete graph through this request's already-open store or snapshot.
+    pub fn full_graph(
+        &self,
+    ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+        match &self.source {
+            ReadSource::Store(storage) => GraphBridge::load_from_storage(storage)
+                .map_err(|error| crate::graph::GraphError::Io(error.to_string()))
+                .map(|(docs, edges)| build_graph_from_docs_and_edges(docs, edges, self.dir)),
+            ReadSource::Snapshot((docs, edges)) => Ok(build_graph_from_docs_and_edges(
+                docs.clone(),
+                edges.clone(),
+                self.dir,
+            )),
+            ReadSource::SharedSnapshot(snapshot) => Ok(build_graph_from_docs_and_edges(
+                snapshot.data.0.clone(),
+                snapshot.data.1.clone(),
+                self.dir,
+            )),
+            ReadSource::Unavailable(error) => Err(crate::graph::GraphError::Io(error.clone())),
+        }
+    }
+
+    /// Count incoming edges per target anchor across the active store or snapshot.
+    pub fn incoming_counts_by_target(
+        &self,
+        edge_types: &[EdgeType],
+    ) -> Result<HashMap<String, usize>, crate::graph::GraphError> {
+        let count_edges = |edges: &[(String, String, EdgeType)]| {
+            let mut seen = HashSet::new();
+            let mut counts = HashMap::new();
+            for (src, dst, edge_type) in edges {
+                if (edge_types.is_empty() || edge_types.contains(edge_type))
+                    && seen.insert((src.as_str(), dst.as_str(), *edge_type))
+                {
+                    *counts.entry(dst.clone()).or_insert(0) += 1;
+                }
+            }
+            counts
+        };
+        match &self.source {
+            ReadSource::Store(storage) => storage
+                .incoming_counts_by_target(edge_types)
+                .map_err(|error| crate::graph::GraphError::Io(error.to_string())),
+            ReadSource::Snapshot((_, edges)) => Ok(count_edges(edges)),
+            ReadSource::SharedSnapshot(snapshot) => Ok(count_edges(&snapshot.data.1)),
+            ReadSource::Unavailable(error) => Err(crate::graph::GraphError::Io(error.clone())),
+        }
+    }
+}
+
+fn filtered_incoming<'a>(
+    start: &str,
+    caller_types: &[EdgeType],
+    get_incoming: impl FnOnce() -> &'a HashMap<String, Vec<(String, EdgeType)>>,
+) -> Vec<(String, EdgeType)> {
+    if caller_types.is_empty() {
+        Vec::new()
+    } else {
+        get_incoming()
+            .get(start)
+            .map(|edges| {
+                edges
+                    .iter()
+                    .filter(|(_, et)| caller_types.contains(et))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -1330,6 +1416,106 @@ mod query_neighborhood_tests {
                 .len(),
             42
         );
+    }
+
+    #[test]
+    fn session_caller_assembly_full_graph_and_counts_match_across_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_dir = dir.path().join("store");
+        let caller = "aden://module/app/lib.rs#caller";
+        let test_caller = "aden://module/app/lib.rs#test_caller";
+        let seed = "aden://module/app/lib.rs#seed";
+        let callee = "aden://module/app/lib.rs#callee";
+        let guide = "aden://doc/app/guide.adoc#intro";
+
+        let doc_with_file = |anchor: &str, file: &str| Document {
+            anchor: anchor.into(),
+            attributes: HashMap::from([("source_file".into(), file.into())]),
+            ..Document::default()
+        };
+        let docs = HashMap::from([
+            (caller.into(), doc_with_file(caller, "src/lib.rs")),
+            (
+                test_caller.into(),
+                doc_with_file(test_caller, "tests/unit.rs"),
+            ),
+            (seed.into(), doc_with_file(seed, "src/lib.rs")),
+            (callee.into(), doc_with_file(callee, "src/lib.rs")),
+            (guide.into(), doc_with_file(guide, "docs/guide.adoc")),
+        ]);
+        let edges = vec![
+            (caller.into(), seed.into(), EdgeType::Calls),
+            (test_caller.into(), seed.into(), EdgeType::Calls),
+            (seed.into(), callee.into(), EdgeType::Calls),
+            (guide.into(), seed.into(), EdgeType::Documents),
+        ];
+
+        let storage = Storage::new(store_dir.to_str().unwrap()).unwrap();
+        for doc in docs.values() {
+            storage.put_document(doc).unwrap();
+        }
+        storage.put_edges_bulk(&edges).unwrap();
+
+        let store_session = GraphReadSession::with_source(dir.path(), ReadSource::Store(storage));
+        let snap_session = GraphReadSession::with_source(
+            dir.path(),
+            ReadSource::Snapshot((docs.clone(), edges.clone())),
+        );
+        let shared_session = GraphReadSession::with_source(
+            dir.path(),
+            ReadSource::SharedSnapshot(std::sync::Arc::new(snapshot::SharedSnapshot::new((
+                docs, edges,
+            )))),
+        );
+
+        let filter = |anchor: &str, source_file: Option<&str>| {
+            !anchor.contains("#test_") && source_file.is_none_or(|file| !file.starts_with("tests/"))
+        };
+        let sessions = [&store_session, &snap_session, &shared_session];
+        let expected_counts =
+            HashMap::from([(seed.to_string(), 2usize), (callee.to_string(), 1usize)]);
+        for session in sessions {
+            let asm = session
+                .assembly_neighborhood_with_callers(
+                    seed,
+                    1,
+                    &[EdgeType::Calls],
+                    &[EdgeType::Calls],
+                    &filter,
+                )
+                .unwrap();
+            let nodes: HashSet<String> = asm.all_nodes().into_iter().map(|(a, _)| a).collect();
+            assert_eq!(
+                nodes,
+                HashSet::from([caller.into(), seed.into(), callee.into()])
+            );
+            let asm_edges: HashSet<(String, String, EdgeType)> = asm
+                .all_edges()
+                .into_iter()
+                .map(|(a, b, edge)| (a, b, edge.edge_type))
+                .collect();
+            assert!(asm_edges.contains(&(seed.into(), caller.into(), EdgeType::Calls)));
+            assert!(asm_edges.contains(&(seed.into(), callee.into(), EdgeType::Calls)));
+
+            let full = session.full_graph().unwrap();
+            assert_eq!(full.all_nodes().len(), 5);
+            assert_eq!(full.all_edges().len(), 4);
+
+            assert_eq!(
+                session
+                    .incoming_counts_by_target(&[EdgeType::Calls])
+                    .unwrap(),
+                expected_counts
+            );
+            assert_eq!(
+                session
+                    .incoming_counts_by_target(&[])
+                    .unwrap()
+                    .get(seed)
+                    .copied(),
+                Some(3)
+            );
+        }
     }
 }
 

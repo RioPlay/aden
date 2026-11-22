@@ -64,10 +64,11 @@ pub fn cmd_timeline(
         (filtered, len)
     };
 
-    // Collect per-commit content, oldest → newest.
-    let mut versions: Vec<Version> = capped
-        .into_iter()
-        .rev() // oldest first
+    // Collect per-commit content, oldest → newest, in parallel.
+    use rayon::prelude::*;
+    let ordered: Vec<(String, String, String)> = capped.into_iter().rev().collect();
+    let mut versions: Vec<Version> = ordered
+        .into_par_iter()
         .map(|(hash, date, subject)| {
             let content = git_show_content(&repo_root, &hash, &relpath);
             let short = if hash == "working-tree" {

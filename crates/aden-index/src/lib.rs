@@ -83,6 +83,9 @@ pub struct Index {
     version: u32,
     /// token -> [(document_id, term_frequency, document_length)]
     inverted: HashMap<String, Vec<Posting>>,
+    /// Corpus-wide posting count used by lexical scoring, computed on demand.
+    #[serde(skip)]
+    posting_count: OnceLock<usize>,
     /// Dense document table; postings carry only compact numeric IDs.
     documents: Vec<IndexedDocument>,
     /// Rebuilt after deserialization; never duplicated in the cache.
@@ -128,7 +131,13 @@ const COVERAGE_WEIGHT: f64 = 1.0;
 /// document that happens to contain both `detect` and `anchor` far apart.
 const PHRASE_BOOST: f64 = 1.5;
 
+/// Legacy JSON cache, read only when no binary cache exists.
 const INDEX_CACHE_BASENAME: &str = "index-cache.json";
+/// Binary cache: [`INDEX_BIN_MAGIC`], LE `u32` [`CURRENT_INDEX_VERSION`], postcard body.
+const INDEX_BIN_BASENAME: &str = "index-cache.bin";
+const INDEX_BIN_MAGIC: &[u8; 8] = b"ADENIDX\0";
+const INDEX_BIN_HEADER_LEN: usize = INDEX_BIN_MAGIC.len() + 4;
+const MAX_INDEX_BIN_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Current tokenizer/format version. Bumped on ANY change to how tokens are
 /// produced, so a stale cache is rebuilt rather than silently shadowing the new
@@ -161,14 +170,107 @@ const CURRENT_INDEX_VERSION: u32 = 16;
 /// retriever dominates a long tail in the other.
 const RRF_K: f64 = 60.0;
 
-/// Build an index, using the on-disk cache when possible.
-/// `key` should be a hash of all `.adoc`/`.aden` file paths + mtimes.
+/// Load the on-disk index cache for `dir`, or `None` when it must be rebuilt.
+///
+/// The binary cache (`index-cache.bin`) is authoritative: when it exists but is
+/// corrupt, truncated, oversized or from another version, the result is `None`
+/// rather than a fall back to a possibly older JSON cache. The legacy
+/// `index-cache.json` is read only when no binary cache exists.
 pub fn try_load(dir: &std::path::Path) -> Option<Index> {
-    let index_path = aden_paths::cache_dir(dir).join(INDEX_CACHE_BASENAME);
-    if !index_path.exists() {
-        return None;
+    let cache_dir = aden_paths::cache_dir(dir);
+    match read_index_bin(&cache_dir.join(INDEX_BIN_BASENAME), MAX_INDEX_BIN_BYTES) {
+        Ok(bytes) => decode_index_bin(&bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            try_load_json(&cache_dir.join(INDEX_CACHE_BASENAME))
+        }
+        Err(_) => None,
     }
-    let text = std::fs::read_to_string(&index_path).ok()?;
+}
+
+/// Binary caches above this size are decoded per call and never retained.
+const MAX_SESSION_INDEX_BYTES: usize = 64 * 1024 * 1024;
+
+struct SessionEntry {
+    cache_dir: PathBuf,
+    digest: [u8; 32],
+    index: std::sync::Arc<Index>,
+}
+
+thread_local! {
+    static SESSION_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SESSION_ENTRY: std::cell::RefCell<Option<SessionEntry>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Enable a thread-local single-entry index cache for a long-lived read worker.
+/// Ordinary CLI commands leave it off. Disabling releases the retained index.
+pub fn set_session_cache_enabled(enabled: bool) {
+    SESSION_ENABLED.with(|cell| cell.set(enabled));
+    if !enabled {
+        clear_session_entry();
+    }
+}
+
+pub fn session_cache_enabled() -> bool {
+    SESSION_ENABLED.with(std::cell::Cell::get)
+}
+
+fn clear_session_entry() {
+    SESSION_ENTRY.with(|entry| *entry.borrow_mut() = None);
+}
+
+/// Like [`try_load`], but shares one decoded index across calls while the
+/// session cache is enabled and the binary cache bytes are unchanged (SHA-256).
+/// With the session cache disabled this is exactly `try_load` with no hashing.
+pub fn try_load_shared(dir: &Path) -> Option<std::sync::Arc<Index>> {
+    use sha2::{Digest, Sha256};
+    use std::sync::Arc;
+    if !session_cache_enabled() {
+        return try_load(dir).map(Arc::new);
+    }
+    let cache_dir = aden_paths::cache_dir(dir);
+    let bytes = match read_index_bin(&cache_dir.join(INDEX_BIN_BASENAME), MAX_INDEX_BIN_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            clear_session_entry();
+            return try_load_json(&cache_dir.join(INDEX_CACHE_BASENAME)).map(Arc::new);
+        }
+        Err(_) => {
+            clear_session_entry();
+            return None;
+        }
+    };
+    if bytes.len() > MAX_SESSION_INDEX_BYTES {
+        clear_session_entry();
+        return decode_index_bin(&bytes).map(Arc::new);
+    }
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    let canon_dir = cache_dir.canonicalize().unwrap_or(cache_dir);
+    let hit = SESSION_ENTRY.with(|entry| {
+        entry
+            .borrow()
+            .as_ref()
+            .filter(|entry| entry.cache_dir == canon_dir && entry.digest == digest)
+            .map(|entry| Arc::clone(&entry.index))
+    });
+    if hit.is_some() {
+        return hit;
+    }
+    // Do not retain the previous index while decoding its replacement.
+    clear_session_entry();
+    let index = Arc::new(decode_index_bin(&bytes)?);
+    SESSION_ENTRY.with(|entry| {
+        *entry.borrow_mut() = Some(SessionEntry {
+            cache_dir: canon_dir,
+            digest,
+            index: Arc::clone(&index),
+        });
+    });
+    Some(index)
+}
+
+fn try_load_json(index_path: &Path) -> Option<Index> {
+    let text = std::fs::read_to_string(index_path).ok()?;
     let mut index: Index = serde_json::from_str(&text).ok()?;
     // Reject a cache built by an older tokenizer (e.g. pre-stemming). Returning
     // `None` forces `load_or_build_index` to rebuild from source.
@@ -179,17 +281,85 @@ pub fn try_load(dir: &std::path::Path) -> Option<Index> {
     Some(index)
 }
 
-/// Save the index to disk cache.
+/// Read a regular file of at most `limit` bytes. A missing file reports
+/// `NotFound`; anything else that is not a usable cache reports `InvalidData`.
+fn read_index_bin(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let invalid =
+        |message: &'static str| std::io::Error::new(std::io::ErrorKind::InvalidData, message);
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return Err(invalid("index cache is not a regular file"));
+    }
+    let file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if len > limit {
+        return Err(invalid("index cache exceeds the size limit"));
+    }
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(invalid("index cache exceeds the size limit"));
+    }
+    Ok(bytes)
+}
+
+/// Encode `index` as magic + LE format version + postcard body.
+fn encode_index_bin(index: &Index) -> Result<Vec<u8>, postcard::Error> {
+    let mut bytes = Vec::with_capacity(INDEX_BIN_HEADER_LEN);
+    bytes.extend_from_slice(INDEX_BIN_MAGIC);
+    bytes.extend_from_slice(&CURRENT_INDEX_VERSION.to_le_bytes());
+    postcard::to_extend(index, bytes)
+}
+
+/// Decode a binary cache, rejecting any header, body or version mismatch.
+fn decode_index_bin(bytes: &[u8]) -> Option<Index> {
+    let (magic, rest) = bytes.split_first_chunk::<8>()?;
+    if magic != INDEX_BIN_MAGIC {
+        return None;
+    }
+    let (version, body) = rest.split_first_chunk::<4>()?;
+    if u32::from_le_bytes(*version) != CURRENT_INDEX_VERSION {
+        return None;
+    }
+    let (mut index, trailing): (Index, _) = postcard::take_from_bytes(body).ok()?;
+    if !trailing.is_empty() || index.version != CURRENT_INDEX_VERSION {
+        return None;
+    }
+    index.rebuild_anchor_ids();
+    Some(index)
+}
+
+/// Save the index to the binary disk cache, replacing it atomically.
+///
+/// A successful save removes any legacy JSON cache so it cannot shadow a later
+/// binary-cache failure.
 pub fn save(index: &Index, dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     let cache_dir = aden_paths::cache_dir(dir);
     std::fs::create_dir_all(&cache_dir)?;
-    let index_path = cache_dir.join(INDEX_CACHE_BASENAME);
-    // This is a rebuildable machine cache, not a hand-edited document. Compact
-    // JSON avoids whitespace amplification across hundreds of thousands of
-    // fixed-shape postings.
-    let json = serde_json::to_string(index)?;
-    std::fs::write(&index_path, json)?;
+    let bytes = encode_index_bin(index)?;
+    let index_path = cache_dir.join(INDEX_BIN_BASENAME);
+    // Concurrent savers (CLI, resident worker, gen) must never share a temp file.
+    static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let counter = SAVE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp_path = cache_dir.join(format!(
+        "{INDEX_BIN_BASENAME}.{}.{counter}.tmp",
+        std::process::id()
+    ));
+    let written =
+        write_flushed(&tmp_path, &bytes).and_then(|()| std::fs::rename(&tmp_path, &index_path));
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(error.into());
+    }
+    let _ = std::fs::remove_file(cache_dir.join(INDEX_CACHE_BASENAME));
     Ok(())
+}
+
+fn write_flushed(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.flush()
 }
 
 /// Load the content-addressed embedding cache (hash → vector) for `dir`, or an
@@ -316,6 +486,14 @@ pub fn tokenize(text: &str) -> Vec<String> {
         // Always index the full (stemmed) form so an exact identifier query —
         // `dispatch_request`, `url_map` — still matches a single strong posting.
         let full = stem(&cleaned);
+        // Lowercase ASCII words and numbers have no sub-token boundaries.
+        if trimmed
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        {
+            out.push(full);
+            continue;
+        }
         out.push(full.clone());
 
         // For compound identifiers (snake_case, kebab-case, dotted paths,
@@ -932,6 +1110,7 @@ impl Index {
         // `detect_communities` sort-before-Louvain determinism fix.)
         parsed.sort_by(|a, b| a.0.0.cmp(&b.0.0).then_with(|| a.0.1.cmp(&b.0.1)));
 
+        let _ = self.posting_count.take();
         for ((anchor, source_path, counts), text) in parsed {
             if self.anchor_to_id.contains_key(&anchor) {
                 continue; // already indexed (e.g. an on-disk copy) — don't double count
@@ -959,6 +1138,13 @@ impl Index {
                     ));
             }
         }
+    }
+
+    /// Check whether a ranked document could satisfy a case-sensitive anchor suffix filter.
+    pub fn contains_anchor_suffix(&self, suffix: &str) -> bool {
+        self.documents
+            .iter()
+            .any(|doc| doc.anchor.ends_with(suffix))
     }
 
     /// Resolve an exact symbol name independently of lexical tokenization.
@@ -1338,7 +1524,9 @@ impl Index {
             return RankedResults::default();
         }
 
-        let n = self.inverted.values().map(|v| v.len()).sum::<usize>() as f64;
+        let n = *self
+            .posting_count
+            .get_or_init(|| self.inverted.values().map(Vec::len).sum()) as f64;
         if n == 0.0 {
             return RankedResults::default();
         }
@@ -2331,6 +2519,8 @@ mod tests {
             ..Index::default()
         };
         assert!(index.query("full_dispatch_request").is_empty());
+        assert!(index.contains_anchor_suffix("dispatch_request"));
+        assert!(!index.contains_anchor_suffix("dispatch"));
         let matches = index.exact_symbol_matches("FULL_DISPATCH_REQUEST");
         assert_eq!(matches.len(), 2);
         assert!(
@@ -2854,31 +3044,69 @@ New content after rebuild.
             ),
         ]);
         index.finalize();
+        let initial_results = index.query("shared");
+        assert_eq!(initial_results[0].anchor, "alpha");
+        let initial_count: usize = index.inverted.values().map(Vec::len).sum();
+        assert_eq!(index.posting_count.get(), Some(&initial_count));
         save(&index, dir.path()).unwrap();
+        let cache_dir = aden_paths::cache_dir(dir.path());
+        assert!(cache_dir.join(INDEX_BIN_BASENAME).is_file());
+        assert!(!cache_dir.join(INDEX_CACHE_BASENAME).exists());
 
-        let cache =
-            std::fs::read_to_string(aden_paths::cache_dir(dir.path()).join(INDEX_CACHE_BASENAME))
-                .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&cache).unwrap();
+        // The legacy JSON shape is still what serde produces for the fallback reader.
+        let json = serde_json::to_value(&index).unwrap();
         assert_eq!(json["version"], CURRENT_INDEX_VERSION);
         assert!(json["documents"].is_array());
         assert!(json.get("doc_lengths").is_none());
         assert!(json.get("anchor_paths").is_none());
         assert!(json.get("anchor_to_id").is_none());
+        assert!(json.get("posting_count").is_none());
         let posting = json["inverted"]["share"][0].as_array().unwrap();
         assert_eq!(posting.len(), 3);
         assert!(posting[0].is_u64(), "posting stores numeric document ID");
         assert!(posting[1].is_u64(), "posting stores term frequency");
         assert!(posting[2].is_u64(), "posting covers document length");
 
-        let loaded = try_load(dir.path()).expect("current cache loads");
+        let mut loaded = try_load(dir.path()).expect("current cache loads");
         assert_eq!(loaded.anchor_to_id.len(), 2);
-        assert_eq!(loaded.query("shared")[0].anchor, "alpha");
+        assert_eq!(loaded.posting_count.get(), None);
+        assert_eq!(loaded.query("shared"), initial_results);
+        assert_eq!(loaded.posting_count.get(), Some(&initial_count));
 
+        loaded.ingest(vec![
+            (
+                PathBuf::from("duplicate.adoc"),
+                "[[alpha]]\n= Topic\n\nshared duplicate".to_string(),
+            ),
+            (
+                PathBuf::from("c.adoc"),
+                "[[gamma]]\n= Topic\n\nunrelated widget".to_string(),
+            ),
+        ]);
+        loaded.finalize();
+        let results = loaded.query("shared");
+        let updated_count: usize = loaded.inverted.values().map(Vec::len).sum();
+        assert_eq!(updated_count, initial_count + 4);
+        assert_eq!(loaded.posting_count.get(), Some(&updated_count));
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].anchor, "alpha");
+        assert!(results[0].score > initial_results[0].score);
+
+        // Without a binary cache, a current legacy JSON cache still loads...
+        std::fs::remove_file(cache_dir.join(INDEX_BIN_BASENAME)).unwrap();
+        std::fs::write(
+            cache_dir.join(INDEX_CACHE_BASENAME),
+            serde_json::to_vec(&json).unwrap(),
+        )
+        .unwrap();
+        let legacy = try_load(dir.path()).expect("current legacy JSON cache loads");
+        assert_eq!(legacy.query("shared"), initial_results);
+
+        // ...but one from the previous inference version rebuilds.
         let mut previous = json;
         previous["version"] = serde_json::json!(15);
         std::fs::write(
-            aden_paths::cache_dir(dir.path()).join(INDEX_CACHE_BASENAME),
+            cache_dir.join(INDEX_CACHE_BASENAME),
             serde_json::to_vec(&previous).unwrap(),
         )
         .unwrap();
@@ -2892,6 +3120,305 @@ New content after rebuild.
             old_embed_key,
             "old content-addressed vectors cannot be reused"
         );
+    }
+
+    /// A finalized index with prose terms, postings and distinct 4-d embeddings.
+    fn cache_fixture_index() -> Index {
+        let mut index = Index::default();
+        index.ingest(vec![
+            (
+                PathBuf::from("a.adoc"),
+                "[[alpha]]\n= Topic\n\nshared widget → arrow".to_string(),
+            ),
+            (
+                PathBuf::from("b.adoc"),
+                "[[beta]]\n= Topic\n\nshared gadget — dash 🚀".to_string(),
+            ),
+        ]);
+        index.finalize();
+        index
+            .embeddings
+            .insert("alpha".into(), vec![1.0, 0.0, 0.5, -0.125]);
+        index
+            .embeddings
+            .insert("beta".into(), vec![0.0, 1.0, -0.25, 0.75]);
+        index.embedding_hashes.insert("alpha".into(), 7);
+        index.embedding_hashes.insert("beta".into(), u64::MAX);
+        index
+    }
+
+    #[test]
+    fn binary_cache_round_trip_matches_in_memory_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        let index = cache_fixture_index();
+        let cache_dir = aden_paths::cache_dir(dir.path());
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join(INDEX_CACHE_BASENAME), "{}").unwrap();
+
+        save(&index, dir.path()).unwrap();
+        assert!(
+            !cache_dir.join(INDEX_CACHE_BASENAME).exists(),
+            "save removes the legacy JSON cache"
+        );
+        assert_no_temp_files(&cache_dir);
+        let bytes = std::fs::read(cache_dir.join(INDEX_BIN_BASENAME)).unwrap();
+        assert_eq!(&bytes[..8], INDEX_BIN_MAGIC);
+        assert_eq!(bytes[8..12], CURRENT_INDEX_VERSION.to_le_bytes());
+
+        let loaded = try_load(dir.path()).expect("binary cache loads");
+        assert_eq!(loaded.posting_count.get(), None);
+        for query in ["shared", "widget", "gadget dash", "topic", "missing"] {
+            assert_eq!(loaded.query(query), index.query(query), "query {query}");
+        }
+        let posting_count: usize = index.inverted.values().map(Vec::len).sum();
+        assert_eq!(loaded.posting_count.get(), Some(&posting_count));
+        assert_eq!(index.posting_count.get(), Some(&posting_count));
+        assert_eq!(loaded.anchor_to_id, index.anchor_to_id);
+        assert_eq!(loaded.file_terms, index.file_terms);
+        assert!(!loaded.file_terms.is_empty());
+        assert_eq!(
+            loaded.avg_doc_length.to_bits(),
+            index.avg_doc_length.to_bits()
+        );
+        assert_eq!(loaded.embeddings, index.embeddings);
+        assert_eq!(loaded.embedding_hashes, index.embedding_hashes);
+        let embedder = CountingEmbedder::new();
+        assert_eq!(
+            loaded.dense_query("shared widget", &embedder),
+            index.dense_query("shared widget", &embedder)
+        );
+        assert_eq!(
+            loaded.hybrid_query("shared widget", &embedder),
+            index.hybrid_query("shared widget", &embedder)
+        );
+    }
+
+    #[test]
+    fn corrupt_binary_cache_is_rejected_without_json_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        let index = cache_fixture_index();
+        save(&index, dir.path()).unwrap();
+        let cache_dir = aden_paths::cache_dir(dir.path());
+        let bin_path = cache_dir.join(INDEX_BIN_BASENAME);
+        let good = std::fs::read(&bin_path).unwrap();
+        // A loadable legacy JSON cache must never mask a broken binary cache.
+        std::fs::write(
+            cache_dir.join(INDEX_CACHE_BASENAME),
+            serde_json::to_vec(&index).unwrap(),
+        )
+        .unwrap();
+
+        let mut wrong_magic = good.clone();
+        wrong_magic[0] ^= 0xff;
+        let mut wrong_header_version = good.clone();
+        wrong_header_version[8..12].copy_from_slice(&(CURRENT_INDEX_VERSION - 1).to_le_bytes());
+        let mut trailing = good.clone();
+        trailing.push(0);
+        let mut stale = cache_fixture_index();
+        stale.version = CURRENT_INDEX_VERSION - 1;
+        let cases = [
+            ("empty", Vec::new()),
+            ("truncated magic", good[..4].to_vec()),
+            (
+                "truncated header",
+                good[..INDEX_BIN_HEADER_LEN - 1].to_vec(),
+            ),
+            ("header only", good[..INDEX_BIN_HEADER_LEN].to_vec()),
+            ("half payload", good[..good.len() / 2].to_vec()),
+            ("payload short one byte", good[..good.len() - 1].to_vec()),
+            ("wrong magic", wrong_magic),
+            ("wrong header version", wrong_header_version),
+            ("trailing bytes", trailing),
+            ("wrong inner version", encode_index_bin(&stale).unwrap()),
+        ];
+        for (name, bytes) in cases {
+            std::fs::write(&bin_path, &bytes).unwrap();
+            assert!(try_load(dir.path()).is_none(), "{name} must be rejected");
+        }
+
+        std::fs::remove_file(&bin_path).unwrap();
+        std::fs::create_dir(&bin_path).unwrap();
+        assert!(
+            try_load(dir.path()).is_none(),
+            "a non-file binary cache must be rejected"
+        );
+
+        std::fs::remove_dir(&bin_path).unwrap();
+        assert!(
+            try_load(dir.path()).is_some(),
+            "legacy JSON loads only when no binary cache exists"
+        );
+    }
+
+    #[test]
+    fn binary_cache_reader_enforces_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(INDEX_BIN_BASENAME);
+        std::fs::write(&path, [0u8; 16]).unwrap();
+        assert_eq!(read_index_bin(&path, 16).unwrap().len(), 16);
+        assert_eq!(
+            read_index_bin(&path, 15).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            read_index_bin(&dir.path().join("missing.bin"), 16)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn failed_binary_save_cleans_temp_file_and_keeps_legacy_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        let cache_dir = aden_paths::cache_dir(dir.path());
+        // A directory in the cache's place makes the final rename fail.
+        std::fs::create_dir_all(cache_dir.join(INDEX_BIN_BASENAME)).unwrap();
+        std::fs::write(cache_dir.join(INDEX_CACHE_BASENAME), "{}").unwrap();
+
+        assert!(save(&cache_fixture_index(), dir.path()).is_err());
+        assert_no_temp_files(&cache_dir);
+        assert!(cache_dir.join(INDEX_CACHE_BASENAME).exists());
+    }
+
+    fn assert_no_temp_files(cache_dir: &Path) {
+        let leftovers: Vec<_> = std::fs::read_dir(cache_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+    }
+
+    #[test]
+    fn save_uses_distinct_temp_files_and_leaves_none_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        let index = cache_fixture_index();
+        save(&index, dir.path()).unwrap();
+        save(&index, dir.path()).unwrap();
+        assert_no_temp_files(&aden_paths::cache_dir(dir.path()));
+        assert!(try_load(dir.path()).is_some());
+    }
+
+    /// Runs `body` with the session cache enabled, disabling it afterwards even
+    /// on panic so other tests on this thread start from the default.
+    fn with_session_cache(body: impl FnOnce()) {
+        struct Disable;
+        impl Drop for Disable {
+            fn drop(&mut self) {
+                set_session_cache_enabled(false);
+            }
+        }
+        let _disable = Disable;
+        set_session_cache_enabled(true);
+        body();
+    }
+
+    fn session_entry_present() -> bool {
+        SESSION_ENTRY.with(|entry| entry.borrow().is_some())
+    }
+
+    #[test]
+    fn disabled_session_cache_never_shares_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        save(&cache_fixture_index(), dir.path()).unwrap();
+        assert!(!session_cache_enabled());
+        let first = try_load_shared(dir.path()).unwrap();
+        let second = try_load_shared(dir.path()).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first, &second));
+        assert!(!session_entry_present());
+    }
+
+    #[test]
+    fn session_cache_reuses_unchanged_bytes_and_reloads_changed_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        with_session_cache(|| {
+            let index = cache_fixture_index();
+            save(&index, dir.path()).unwrap();
+            let first = try_load_shared(dir.path()).unwrap();
+            let second = try_load_shared(dir.path()).unwrap();
+            assert!(std::sync::Arc::ptr_eq(&first, &second));
+
+            // Different length: a new document changes the encoded size.
+            let mut grown = cache_fixture_index();
+            grown.ingest(vec![(
+                PathBuf::from("c.adoc"),
+                "[[gamma]]\n= Topic\n\nfresh sprocket".to_string(),
+            )]);
+            grown.finalize();
+            save(&grown, dir.path()).unwrap();
+            let changed = try_load_shared(dir.path()).unwrap();
+            assert!(!std::sync::Arc::ptr_eq(&second, &changed));
+            assert_eq!(changed.query("sprocket")[0].anchor, "gamma");
+            assert!(
+                first.query("sprocket").is_empty(),
+                "held index stays immutable"
+            );
+            let again = try_load_shared(dir.path()).unwrap();
+            assert!(std::sync::Arc::ptr_eq(&changed, &again));
+        });
+    }
+
+    #[test]
+    fn session_cache_rewrite_with_equal_length_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        let bin_path = aden_paths::cache_dir(dir.path()).join(INDEX_BIN_BASENAME);
+        with_session_cache(|| {
+            save(&cache_fixture_index(), dir.path()).unwrap();
+            let first = try_load_shared(dir.path()).unwrap();
+            let mut changed = cache_fixture_index();
+            changed.embedding_hashes.insert("alpha".into(), 9);
+            let bytes = encode_index_bin(&changed).unwrap();
+            assert_eq!(bytes.len(), std::fs::read(&bin_path).unwrap().len());
+            std::fs::write(&bin_path, &bytes).unwrap();
+            let second = try_load_shared(dir.path()).unwrap();
+            assert!(!std::sync::Arc::ptr_eq(&first, &second));
+            assert_eq!(second.embedding_hashes["alpha"], 9);
+        });
+    }
+
+    #[test]
+    fn session_cache_evicts_deleted_or_corrupt_binary_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        let bin_path = aden_paths::cache_dir(dir.path()).join(INDEX_BIN_BASENAME);
+        with_session_cache(|| {
+            save(&cache_fixture_index(), dir.path()).unwrap();
+            try_load_shared(dir.path()).unwrap();
+            assert!(session_entry_present());
+            std::fs::remove_file(&bin_path).unwrap();
+            assert!(try_load_shared(dir.path()).is_none());
+            assert!(!session_entry_present());
+
+            save(&cache_fixture_index(), dir.path()).unwrap();
+            try_load_shared(dir.path()).unwrap();
+            assert!(session_entry_present());
+            std::fs::write(&bin_path, b"broken").unwrap();
+            assert!(try_load_shared(dir.path()).is_none());
+            assert!(!session_entry_present());
+        });
+    }
+
+    #[test]
+    fn disabling_session_cache_releases_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        save(&cache_fixture_index(), dir.path()).unwrap();
+        set_session_cache_enabled(true);
+        let shared = try_load_shared(dir.path()).unwrap();
+        assert!(session_entry_present());
+        assert_eq!(std::sync::Arc::strong_count(&shared), 2);
+        set_session_cache_enabled(false);
+        assert!(!session_cache_enabled());
+        assert!(!session_entry_present());
+        assert_eq!(std::sync::Arc::strong_count(&shared), 1);
     }
 
     #[test]

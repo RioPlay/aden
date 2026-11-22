@@ -238,11 +238,7 @@ fn extract_node_name(node: tree_sitter::Node, source: &str) -> Option<String> {
         }
 
         // C-style: declarator → identifier
-        if let Some(decl) = node.child_by_field_name("declarator") {
-            node = decl;
-        } else {
-            return None;
-        }
+        node = node.child_by_field_name("declarator")?;
     }
 }
 

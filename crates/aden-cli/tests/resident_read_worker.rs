@@ -78,6 +78,27 @@ impl Worker {
         output.read_line(&mut line).unwrap();
         let hello: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(hello["protocol"], "aden-read-worker-v1");
+        let commands: Vec<&str> = hello["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for expected in [
+            "locate",
+            "understand",
+            "query",
+            "read",
+            "grep",
+            "tree",
+            "search",
+            "asm",
+        ] {
+            assert!(
+                commands.contains(&expected),
+                "missing {expected} in {hello}"
+            );
+        }
         let pid = hello["pid"].as_u64().unwrap();
         assert_eq!(pid, u64::from(child.id()));
         Self {
@@ -103,11 +124,29 @@ impl Worker {
     }
 
     fn body(&mut self, args: &[&str]) -> Value {
-        let response = self.request(args);
-        assert_eq!(response["ok"], true, "{response}");
-        let body: Value = serde_json::from_str(response["stdout"].as_str().unwrap()).unwrap();
+        let body = self.machine_body(args);
         assert_eq!(body["context_receipt"]["freshness"], "current", "{body}");
         body
+    }
+
+    /// A successful JSON body, without assuming the command carries a graph
+    /// freshness receipt (`read` deliberately makes no graph claim).
+    fn machine_body(&mut self, args: &[&str]) -> Value {
+        let response = self.request(args);
+        assert_eq!(response["ok"], true, "{response}");
+        serde_json::from_str(response["stdout"].as_str().unwrap()).unwrap()
+    }
+
+    fn assert_rejected(&mut self, args: &[&str]) {
+        let response = self.request(args);
+        assert_eq!(response["ok"], false, "{args:?}: {response}");
+        assert!(
+            response["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("resident worker accepts"),
+            "{args:?}: {response}"
+        );
     }
 }
 
@@ -133,6 +172,90 @@ fn resident_sequence_reuses_process_and_preserves_cli_bodies() {
         let actual = worker.body(&args);
         assert_eq!(actual, expected, "{args:?}");
     }
+}
+
+#[test]
+fn resident_source_and_index_reads_match_cli_bodies_on_one_process() {
+    let fixture = Fixture::new();
+    fixture.cli(&["gen", ".", "--quiet"]);
+    let mut worker = Worker::new(&fixture);
+    let pid = worker.pid;
+    for args in [
+        vec![
+            "read",
+            "lib.rs",
+            ".",
+            "--start-line",
+            "1",
+            "--end-line",
+            "2",
+        ],
+        vec!["grep", "leaf", "."],
+        vec!["tree", "."],
+        vec!["tree", ".", "--files"],
+        vec!["search", "leaf", "."],
+        // Repeat to exercise the retained index on an unchanged cache.
+        vec!["search", "leaf", "."],
+        vec!["asm", "--from", "leaf", "--strict", "."],
+    ] {
+        let expected: Value = serde_json::from_str(&fixture.cli(&args)).unwrap();
+        let actual = worker.machine_body(&args);
+        assert_eq!(actual, expected, "{args:?}");
+        assert_eq!(worker.pid, pid);
+    }
+}
+
+#[test]
+fn resident_rejects_non_json_inspect_and_file_asm() {
+    let fixture = Fixture::new();
+    fixture.cli(&["gen", ".", "--quiet"]);
+    let mut worker = Worker::new(&fixture);
+    worker.assert_rejected(&["asm", "--from", "leaf", "--format", "llm", "."]);
+    worker.assert_rejected(&["asm", "--from", "leaf", "--inspect", "."]);
+    worker.assert_rejected(&["asm", "--from", "leaf", "-o", "out.txt", "."]);
+    assert!(!fixture.root.path().join("out.txt").exists());
+    // The worker stays usable after each rejection.
+    let body = worker.machine_body(&["asm", "--from", "leaf", "--strict", "."]);
+    assert!(body.is_object(), "{body}");
+}
+
+#[test]
+fn resident_search_reflects_regenerated_index() {
+    let fixture = Fixture::new();
+    fixture.cli(&["gen", ".", "--quiet"]);
+    let mut worker = Worker::new(&fixture);
+    let anchors = |body: &Value| -> Vec<String> {
+        body["results"]
+            .as_array()
+            .unwrap_or_else(|| panic!("search body has no result list: {body}"))
+            .iter()
+            .filter_map(|item| item["anchor"].as_str().map(str::to_string))
+            .collect()
+    };
+    let before = worker.machine_body(&["search", "sprocket", "."]);
+    assert!(
+        !anchors(&before)
+            .iter()
+            .any(|anchor| anchor.ends_with("#sprocket_widget")),
+        "{before}"
+    );
+    std::fs::write(
+        fixture.root.path().join("lib.rs"),
+        "pub fn entry() { leaf(); }\npub fn leaf() {}\npub fn sprocket_widget() {}\n",
+    )
+    .unwrap();
+    // A separate process regenerates the graph and replaces the index cache
+    // while the worker still retains the previous decoded index.
+    fixture.cli(&["gen", ".", "--quiet"]);
+    let after = worker.machine_body(&["search", "sprocket", "."]);
+    assert!(
+        anchors(&after)
+            .iter()
+            .any(|anchor| anchor.ends_with("#sprocket_widget")),
+        "{after}"
+    );
+    let expected: Value = serde_json::from_str(&fixture.cli(&["search", "sprocket", "."])).unwrap();
+    assert_eq!(after, expected);
 }
 
 #[test]

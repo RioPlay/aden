@@ -119,12 +119,14 @@ tooling. Use `--human` when you want clean terminal prose or tables; the legacy
 `--json` flag remains accepted for compatibility.
 
 ```bash
+aden read README.md --start-line 1 --end-line 5 --human
 aden ask "How does authentication work?"          # versioned JSON envelope
 aden ask --human "How does authentication work?"  # clean context for a person
 ```
 
 | Command | Purpose |
 |---------|---------|
+| `aden read` | Read a known file and line range directly, without building an index |
 | `aden tree --symbols` | Bounded symbol and line-range map; scope to a subtree when truncated |
 | `aden grep` | Structure-aware evidence; each hit includes its enclosing symbol |
 | `aden locate` | Resolve names to canonical anchors and source ranges |

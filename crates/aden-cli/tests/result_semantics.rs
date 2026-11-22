@@ -32,6 +32,55 @@ fn json(output: &Output) -> Value {
     })
 }
 
+fn check_summary(doc: &Value) -> Result<(bool, u64), &'static str> {
+    let ok = doc["ok"].as_bool().ok_or("ok must be a boolean")?;
+    let counts = doc["counts"]
+        .as_object()
+        .ok_or("counts must be an object")?;
+    if ["errors", "warnings", "info"]
+        .into_iter()
+        .any(|name| doc.get(name).is_some())
+    {
+        return Err("errors, warnings, and info must be nested in counts");
+    }
+    let count = |name, message| counts.get(name).and_then(Value::as_u64).ok_or(message);
+    let errors = count("errors", "counts.errors must be an unsigned integer")?;
+    count("warnings", "counts.warnings must be an unsigned integer")?;
+    count("info", "counts.info must be an unsigned integer")?;
+    Ok((ok, errors))
+}
+
+fn documented_check_summary() -> Value {
+    const MARKER: &str = "[source,json,id=check-json-summary]";
+    let mut lines = include_str!("../../../docs/commands.adoc")
+        .lines()
+        .peekable();
+    assert!(
+        lines.any(|line| line == MARKER),
+        "missing {MARKER} in docs/commands.adoc"
+    );
+    assert_eq!(
+        lines.next(),
+        Some("----"),
+        "missing opening delimiter for {MARKER}"
+    );
+    let mut body = String::new();
+    while let Some(line) = lines.next_if(|line| *line != "----") {
+        body.push_str(line);
+        body.push('\n');
+    }
+    assert_eq!(
+        lines.next(),
+        Some("----"),
+        "missing closing delimiter for {MARKER}"
+    );
+    assert!(
+        !lines.any(|line| line == MARKER),
+        "duplicate {MARKER} in docs/commands.adoc"
+    );
+    serde_json::from_str(&body).unwrap_or_else(|e| panic!("invalid JSON in {MARKER}: {e}"))
+}
+
 fn assert_complete_result(doc: &Value) {
     let result = &doc["result"];
     assert_eq!(result["schema_version"], 1);
@@ -126,6 +175,54 @@ fn ask_empty_result_keeps_machine_json_contract() {
 }
 
 #[test]
+fn check_json_matches_documented_summary() {
+    let data = temp_project("check-summary-data");
+    let project = valid_project("check-summary-project");
+    let out = aden(
+        &[
+            "check".as_ref(),
+            project.as_os_str(),
+            "--severity".as_ref(),
+            "Forbid".as_ref(),
+            "--json".as_ref(),
+        ],
+        &data,
+    );
+    assert!(
+        out.status.success(),
+        "check rejected a valid project: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = json(&out);
+    let actual = check_summary(&doc).unwrap_or_else(|e| panic!("invalid check output: {e}: {doc}"));
+    assert_eq!(actual, (true, 0), "successful check summary: {doc}");
+
+    let example = documented_check_summary();
+    let documented = check_summary(&example).unwrap_or_else(|e| {
+        panic!("invalid check-json-summary in docs/commands.adoc: {e}: {example}")
+    });
+    assert_eq!(documented, actual, "documented check summary: {example}");
+}
+
+#[test]
+fn check_json_summary_rejects_flat_counters() {
+    let flat = serde_json::json!({"ok": true, "errors": 0, "warnings": 0, "info": 7});
+    assert_eq!(check_summary(&flat), Err("counts must be an object"));
+
+    for name in ["errors", "warnings", "info"] {
+        let mut mixed =
+            serde_json::json!({"ok": true, "counts": {"errors": 0, "warnings": 0, "info": 7}});
+        mixed[name] = flat[name].clone();
+        assert_eq!(
+            check_summary(&mixed),
+            Err("errors, warnings, and info must be nested in counts"),
+            "accepted top-level {name}: {mixed}"
+        );
+    }
+}
+
+#[test]
 fn check_json_keeps_graph_policy_and_freshness_axes_stable() {
     let data = temp_project("check-data");
     let project = temp_project("check-project");
@@ -146,6 +243,10 @@ fn check_json_keeps_graph_policy_and_freshness_axes_stable() {
     );
     assert!(!out.status.success());
     let doc = json(&out);
+    let (ok, errors) =
+        check_summary(&doc).unwrap_or_else(|e| panic!("invalid blocked check output: {e}: {doc}"));
+    assert!(!ok, "blocked check reported ok: {doc}");
+    assert!(errors > 0, "blocked check reported no errors: {doc}");
     assert_eq!(doc["result"]["outcome"], "blocked");
     assert_eq!(doc["result"]["graph_health"], "unhealthy");
     assert!(doc["result"].get("policy_outcome").is_some());

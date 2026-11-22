@@ -78,6 +78,8 @@ jobs:
           --test freshness_coherence
           --test freshness_paths
           --test source_read
+          --test result_semantics
+          --test findings
           --test read_trace
           --test gen_trace
 

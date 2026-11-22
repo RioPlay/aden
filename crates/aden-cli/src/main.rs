@@ -264,8 +264,6 @@ enum Commands {
         severity: String,
         #[arg(short = 'f', long, help = "Fix issues where possible")]
         fix: bool,
-        #[arg(short = 'j', long, help = "Output JSON format")]
-        json: bool,
         #[arg(
             long,
             help = "Flag potentially dead code (symbols with no incoming graph edges)"
@@ -507,8 +505,6 @@ enum Commands {
             help = "Filter by pattern (e.g., 'mod-aden-*')"
         )]
         filter: Option<String>,
-        #[arg(long, help = "Show detailed information for each anchor")]
-        verbose: bool,
         #[arg(long, help = "Show only semantic concept nodes")]
         semantics: bool,
         #[arg(
@@ -525,14 +521,13 @@ enum Commands {
             help = "Offset for pagination"
         )]
         offset: usize,
-        #[arg(long, help = "Show all results (no limit)")]
-        unlimited: bool,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Read an explicit source range without indexing or semantic routing
     #[command(
-        long_about = "Read literal source without indexing or semantic routing. --unlimited requests all remaining lines, while the 8192-byte excerpt and 16 MiB file caps still apply. An explicit --end-line remains the requested boundary. Use JSON output for hash-pinned byte continuations when an excerpt is clipped."
+        long_about = "Read literal source without indexing or semantic routing. --unlimited requests all remaining lines, while the 8192-byte excerpt and 16 MiB file caps still apply. An explicit --end-line remains the requested boundary. Use JSON output for hash-pinned byte continuations when an excerpt is clipped.",
+        after_help = "Print the first five lines in your terminal:\n  aden read README.md --start-line 1 --end-line 5 --human"
     )]
     Read {
         #[arg(
@@ -567,6 +562,28 @@ enum Commands {
             help = "Continue at next_byte from an earlier read (requires expected-hash; preserve end-line)"
         )]
         start_byte: Option<usize>,
+    },
+    /// Inspect authored relationships between source passages
+    Findings {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Match either end by project-relative path"
+        )]
+        file: Option<String>,
+        #[arg(
+            long,
+            requires = "file",
+            help = "Match an inclusive line at either end"
+        )]
+        line: Option<usize>,
+        #[arg(
+            long,
+            help = "Fail on no matches, source drift, or authored contradictions"
+        )]
+        check: bool,
     },
     /// Search content and tag each hit with its enclosing symbol
     Grep {
@@ -981,9 +998,6 @@ enum Commands {
         /// Token budget for the assembled context block
         #[arg(short = 'b', long, value_name = "TOKENS", default_value = "4000")]
         budget: usize,
-        /// Emit a single JSON object instead of a human report
-        #[arg(long)]
-        json: bool,
         /// Machine-output shape. `full` preserves the established contract;
         /// `compact-v2` removes redundant healthy-state bookkeeping.
         #[arg(
@@ -1591,16 +1605,39 @@ fn real_main_from(
         read_worker::validate_command(&cli)?;
     }
     read_trace.select_command(matches.subcommand_name());
-    if matches!(
-        cli.command,
-        Commands::Read { .. }
-            | Commands::Understand { .. }
-            | Commands::Locate { .. }
-            | Commands::Query { .. }
-    ) {
+    if uses_read_root_scope(&cli.command) {
         aden_paths::with_read_root_scope(|| execute_cli(cli, matches, read_trace))
     } else {
         execute_cli(cli, matches, read_trace)
+    }
+}
+
+fn uses_read_root_scope(command: &Commands) -> bool {
+    match command {
+        Commands::Read { .. }
+        | Commands::Findings { .. }
+        | Commands::Understand { .. }
+        | Commands::Locate { .. }
+        | Commands::Query { .. }
+        | Commands::Grep { .. }
+        | Commands::Tree { .. }
+        | Commands::Asm { .. }
+        | Commands::Ask { .. }
+        | Commands::Search { .. }
+        | Commands::Status { .. }
+        | Commands::List { .. }
+        | Commands::Check { .. }
+        | Commands::Diagnose { .. }
+        | Commands::ImpactDiff { .. }
+        | Commands::Communities { .. }
+        | Commands::Scope { .. }
+        | Commands::Viz { .. }
+        | Commands::Lint { .. }
+        | Commands::Audit { .. }
+        | Commands::Ready { .. } => true,
+        #[cfg(feature = "view")]
+        Commands::Timeline { .. } => true,
+        _ => false,
     }
 }
 
@@ -1759,14 +1796,13 @@ fn execute_cli(
             path,
             severity,
             fix,
-            json,
             dead_code,
             include_public,
         } => commands::cmd_lint(
             &path,
             &severity,
             fix,
-            json || machine_json,
+            machine_json,
             dead_code,
             include_public,
             false,
@@ -1776,13 +1812,12 @@ fn execute_cli(
             symbol,
             path,
             budget,
-            json,
             profile,
         } => commands::cmd_understand(
             &symbol,
             &path,
             budget,
-            json || machine_json,
+            machine_json,
             profile.is_compact() && quiet,
         ),
         Commands::Test {
@@ -1924,22 +1959,16 @@ fn execute_cli(
         }
         Commands::List {
             filter,
-            verbose,
             semantics,
             limit,
             offset,
-            unlimited,
             path,
         } => {
-            let effective_limit = if unlimited || cli.unlimited {
-                usize::MAX
-            } else {
-                limit
-            };
+            let effective_limit = if cli.unlimited { usize::MAX } else { limit };
             commands::cmd_list(
                 &path,
                 filter.as_deref(),
-                verbose,
+                cli.verbose,
                 effective_limit,
                 offset,
                 semantics,
@@ -1967,6 +1996,12 @@ fn execute_cli(
             },
             machine_json,
         ),
+        Commands::Findings {
+            path,
+            file,
+            line,
+            check,
+        } => commands::findings::cmd_findings(&path, file.as_deref(), line, check, machine_json),
         Commands::Grep {
             pattern,
             regex,
@@ -2389,4 +2424,49 @@ fn execute_cli(
         read_trace.success(matches.subcommand_name());
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subcommands_do_not_shadow_global_shorthands() {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let u_short = Cli::try_parse_from(["aden", "understand", "cmd_read", "-j"])
+                    .expect("understand -j must parse");
+                assert!(u_short.json && !u_short.human);
+
+                let u_long = Cli::try_parse_from(["aden", "understand", "cmd_read", "--json"])
+                    .expect("understand --json must parse");
+                assert!(u_long.json && !u_long.human);
+
+                let u_prefix = Cli::try_parse_from(["aden", "-j", "understand", "cmd_read"])
+                    .expect("-j understand must parse");
+                assert!(u_prefix.json && !u_prefix.human);
+
+                let u_human = Cli::try_parse_from(["aden", "understand", "cmd_read", "--human"])
+                    .expect("understand --human must parse");
+                assert!(!u_human.json && u_human.human);
+
+                assert!(
+                    Cli::try_parse_from(["aden", "understand", "cmd_read", "-j", "--human"])
+                        .is_err(),
+                    "-j and --human must conflict on understand"
+                );
+
+                let lint_short =
+                    Cli::try_parse_from(["aden", "lint", "-j"]).expect("lint -j must parse");
+                assert!(lint_short.json);
+
+                let list_flags = Cli::try_parse_from(["aden", "list", "-v", "-u"])
+                    .expect("list -v -u must parse");
+                assert!(list_flags.verbose && list_flags.unlimited);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }

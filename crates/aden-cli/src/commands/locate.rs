@@ -249,6 +249,234 @@ fn impact_reachable(
     out
 }
 
+const MAX_DOCUMENTATION_ITEMS: usize = 3;
+const MAX_COMMENT_REFERENCES: usize = 4;
+const MAX_COMMENT_DOCUMENTS: usize = 16;
+
+type UnderstandGraph = aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>;
+
+fn documentation_file(anchor: &str) -> Option<&str> {
+    let (_, location) = anchor.strip_prefix("aden://doc/")?.split_once('/')?;
+    let file = location.split('#').next()?;
+    [".adoc", ".asciidoc", ".md", ".markdown"]
+        .into_iter()
+        .find_map(|extension| {
+            if file.ends_with(extension) {
+                Some(file)
+            } else {
+                let (prefix, _) = file.split_once(&format!("{extension}/"))?;
+                Some(&file[..prefix.len() + extension.len()])
+            }
+        })
+}
+
+fn comment_references<'a>(
+    document: &'a aden_core::Document,
+    impact: &'a UnderstandGraph,
+    reachable: &[(aden_graph::NodeIndex, usize)],
+) -> Vec<(String, &'a str, usize)> {
+    static CITATION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"(?i:\bADR-[0-9]{1,8}\b)|",
+            r"docs/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:markdown|md)",
+            r"(?:#[A-Za-z0-9_-]+)?"
+        ))
+        .unwrap()
+    });
+
+    let Some(file) = document.attributes.get("source_file") else {
+        return Vec::new();
+    };
+    let mut references = Vec::new();
+    let mut seen = HashSet::new();
+    for (doc, depth) in std::iter::once((document, 0))
+        .chain(
+            reachable
+                .iter()
+                .map(|&(idx, depth)| (&impact.graph[idx].doc, depth)),
+        )
+        .filter(|(doc, _)| {
+            doc.anchor.starts_with("aden://module/")
+                && doc.attributes.get("source_file") == Some(file)
+        })
+        .take(MAX_COMMENT_DOCUMENTS)
+    {
+        // Code resolvers place source commentary before generated signature
+        // blocks. Inspect the leading paragraph only and keep no comment text.
+        if let Some(aden_core::Block::Paragraph(comment)) = doc.blocks.first() {
+            let mut end = comment.len().min(2048);
+            while !comment.is_char_boundary(end) {
+                end -= 1;
+            }
+            for found in CITATION.find_iter(&comment[..end]) {
+                let citation = found.as_str();
+                let citation = if citation.starts_with("docs/") {
+                    let before = comment[..found.start()].chars().next_back();
+                    let after = &comment[found.end()..];
+                    let delimiter = |c: char| c.is_whitespace() || "`'\"[]()<>,;".contains(c);
+                    if citation.len() > 256
+                        || before.is_some_and(|c| !delimiter(c))
+                        || after
+                            .strip_prefix('.')
+                            .unwrap_or(after)
+                            .chars()
+                            .next()
+                            .is_some_and(|c| !delimiter(c))
+                    {
+                        continue;
+                    }
+                    citation.to_owned()
+                } else {
+                    citation.to_ascii_lowercase()
+                };
+                if seen.insert(citation.clone()) {
+                    references.push((citation, doc.anchor.as_str(), depth));
+                    if references.len() == MAX_COMMENT_REFERENCES {
+                        return references;
+                    }
+                }
+            }
+        }
+    }
+    references
+}
+
+fn understand_documentation(
+    path: &Path,
+    document: &aden_core::Document,
+    backlinks: &UnderstandGraph,
+    impact: &UnderstandGraph,
+    reachable: &[(aden_graph::NodeIndex, usize)],
+    max_tokens: usize,
+    resolve: impl Fn(&str) -> Option<aden_graph::cache::AnchorResolution>,
+) -> Vec<serde_json::Value> {
+    use aden_graph::cache::AnchorResolution;
+    use serde_json::json;
+
+    if max_tokens == 0 || !document.anchor.starts_with("aden://module/") {
+        return Vec::new();
+    }
+    let mut explicit = Vec::new();
+    if let Some(index) = backlinks.get_index(&document.anchor) {
+        for neighbor in backlinks
+            .graph
+            .neighbors_directed(index, Direction::Incoming)
+        {
+            let anchor = backlinks.graph[neighbor].doc.anchor.as_str();
+            if anchor.starts_with("aden://doc/")
+                && backlinks
+                    .graph
+                    .edges_connecting(neighbor, index)
+                    .any(|edge| edge.weight().edge_type == aden_core::EdgeType::Documents)
+            {
+                explicit.push(anchor);
+            }
+        }
+    }
+    explicit.sort_unstable();
+    explicit.dedup();
+    let references = comment_references(document, impact, reachable);
+    if explicit.is_empty() && references.is_empty() {
+        return Vec::new();
+    }
+    let Ok(root) = std::fs::canonicalize(crate::util::find_project_root(path)) else {
+        return Vec::new();
+    };
+    let config = aden_core::AdenConfig::load(&root);
+    let filter = aden_core::filter::AdenFilter::from_directory(&root);
+    let allowed_file = |file: &str| {
+        let relative = Path::new(file);
+        if relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        let real_path = std::fs::canonicalize(root.join(relative)).ok()?;
+        let resolved = real_path.strip_prefix(&root).ok()?;
+        let allowed = |path: &Path| {
+            !config.is_private(path)
+                && !config.is_private(Path::new(&crate::util::normalize_sep(path)))
+                && !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| config.is_private_anchor(name))
+                && !aden_core::filter::is_secret_path(path)
+                && !path
+                    .ancestors()
+                    .any(|part| !part.as_os_str().is_empty() && filter.should_skip(part))
+        };
+        (real_path.is_file() && allowed(relative) && allowed(resolved)).then(|| file.to_owned())
+    };
+    let allowed_anchor = |anchor: &str| {
+        if config.is_private_anchor(anchor)
+            || anchor
+                .rsplit_once('#')
+                .is_some_and(|(_, fragment)| config.is_private_anchor(fragment))
+        {
+            return None;
+        }
+        allowed_file(documentation_file(anchor)?)
+    };
+    let mut candidates: Vec<_> = explicit
+        .into_iter()
+        .take(MAX_COMMENT_DOCUMENTS)
+        .filter_map(|anchor| {
+            Some(json!({
+                "anchor": anchor,
+                "file": allowed_anchor(anchor)?,
+                "provenance": "explicit_documentation_backlink",
+            }))
+        })
+        .collect();
+    if candidates.is_empty() {
+        candidates.extend(references.into_iter().filter_map(|(id, source, depth)| {
+            let evidence = json!({ "reference": id, "anchor": source, "dependency_depth": depth });
+            if id.starts_with("docs/") {
+                let (file, fragment) = id.split_once('#').unwrap_or((&id, ""));
+                if config.is_private_anchor(fragment) {
+                    return None;
+                }
+                return Some(json!({
+                    "file": allowed_file(file)?,
+                    "provenance": "source_comment_file_reference",
+                    "evidence": evidence,
+                }));
+            }
+            let AnchorResolution::Unique { anchor } = resolve(&id)? else {
+                return None;
+            };
+            // Definitive natural matches alone are insufficient: require
+            // the exact cited fragment on an authored document.
+            if !anchor
+                .rsplit_once('#')
+                .is_some_and(|(_, fragment)| fragment.eq_ignore_ascii_case(&id))
+            {
+                return None;
+            }
+            Some(json!({
+                "anchor": anchor,
+                "file": allowed_anchor(&anchor)?,
+                "provenance": "source_comment_reference",
+                "evidence": evidence,
+            }))
+        }));
+    }
+    let mut bytes_remaining = max_tokens.saturating_mul(4);
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            let size = candidate.to_string().len() + 1;
+            if size > bytes_remaining {
+                return false;
+            }
+            bytes_remaining -= size;
+            true
+        })
+        .take(MAX_DOCUMENTATION_ITEMS)
+        .collect()
+}
+
 fn check_publication_revision(
     expected: Option<&str>,
     observed: Option<&str>,
@@ -397,31 +625,53 @@ pub fn cmd_understand(
         }
     };
 
-    let (document, alternates, backlink_graph, impact_graph, neigh) = {
+    let (document, alternates, backlink_graph, impact, documentation, neigh) = {
         let _trace = crate::read_trace::span(crate::read_trace::Stage::GraphLoad);
         let document = reader.document(&anchor)?.ok_or_else(|| {
             format!("Anchor '{anchor}' has no stored definition; refresh the index before retrying")
         })?;
-        let alternates = alternate_anchors(
-            symbol,
-            &anchor,
-            reader.anchors()?.iter().map(String::as_str),
-        );
+        let anchors = reader.anchors()?;
+        let alternates = alternate_anchors(symbol, &anchor, anchors.iter().map(String::as_str));
         let backlink_graph =
             reader.query_neighborhood(&anchor, 1, Direction::Incoming, &[], false, usize::MAX)?;
+        let impact_types = crate::util::impact_edge_types();
         let impact_graph = reader.query_neighborhood(
             &anchor,
             2,
             Direction::Outgoing,
-            &crate::util::impact_edge_types(),
+            &impact_types,
             false,
             usize::MAX,
         )?;
+        let impact_idx = impact_graph
+            .get_index(&anchor)
+            .ok_or("resolved impact seed is unavailable")?;
+        let reachable = impact_reachable(&impact_graph, impact_idx, &impact_types, 2);
+        let documentation = understand_documentation(
+            path,
+            &document,
+            &backlink_graph,
+            &impact_graph,
+            &reachable,
+            (budget / 8).min(256),
+            |id| reader.resolve_anchor_exhaustive(id).ok(),
+        );
+        let impact: Vec<_> = reachable
+            .into_iter()
+            .map(|(n, d)| node_to_json(&impact_graph.graph[n], d))
+            .collect();
         let neigh = reader.assembly_neighborhood(&anchor, 2, &[])?;
         // Storage must close before source reads, assembly and the independent
         // final freshness observation. Its close cost stays in graph_load.
         drop(reader);
-        (document, alternates, backlink_graph, impact_graph, neigh)
+        (
+            document,
+            alternates,
+            backlink_graph,
+            impact,
+            documentation,
+            neigh,
+        )
     };
 
     // Definition location from the node's attributes.
@@ -440,24 +690,6 @@ pub fn cmd_understand(
     // Step 2: backlinks — incoming references (mirrors `query --backlinks`).
     let backlinks = collect_unique_backlinks(&backlink_graph, &anchor);
 
-    // Step 3: dependencies — outgoing reach over impact edge types
-    // (mirrors `query --impact`). Uses the one shared SET: this local copy had
-    // silently drifted (it was missing Implements/Mutates, so understand's
-    // impact view truncated at trait boundaries that `query --impact` crossed).
-    let impact_types = crate::util::impact_edge_types();
-    // Keep all three views (backlinks, impact, assembled context) within the
-    // same fixed three-hop comprehension neighborhood. An unbounded impact
-    // list could otherwise overwhelm the MCP response before its bounded
-    // context section reached the caller.
-    let impact_idx = impact_graph
-        .get_index(&anchor)
-        .ok_or("resolved impact seed is unavailable")?;
-    let impact: Vec<serde_json::Value> =
-        impact_reachable(&impact_graph, impact_idx, &impact_types, 2)
-            .into_iter()
-            .map(|(n, d)| node_to_json(&impact_graph.graph[n], d))
-            .collect();
-
     // Reserve a bounded share of the content budget for the exact root source.
     // It is verified against the indexed hash before trusting the line range.
     let source = understand_source(path, &document, (budget / 2).min(2048));
@@ -466,7 +698,12 @@ pub fn cmd_understand(
         .unwrap_or_default()
         .len()
         .div_ceil(4);
-    let context_budget = budget.saturating_sub(source_tokens);
+    let documentation_tokens = documentation
+        .iter()
+        .map(|item| item.to_string().len() + 1)
+        .sum::<usize>()
+        .div_ceil(4);
+    let context_budget = budget.saturating_sub(source_tokens + documentation_tokens);
 
     // Step 4: assemble a context block from the anchor within budget, via the
     // same neighborhood-stream + assemble path `asm` uses.
@@ -513,8 +750,9 @@ pub fn cmd_understand(
             "alternates": alternates,
             "definition": def,
             "source": source,
+            "documentation": documentation,
             "next_actions": actions,
-            "content_budget": { "tokens": budget, "source_tokens": source_tokens, "context_tokens_available": context_budget },
+            "content_budget": { "tokens": budget, "source_tokens": source_tokens, "documentation_tokens": documentation_tokens, "context_tokens_available": context_budget },
             "backlinks": backlinks,
             "impact": impact,
             "relationships": {
@@ -619,8 +857,29 @@ pub fn cmd_understand(
     }
     println!();
 
+    if !documentation.is_empty() {
+        println!("## Authored documentation");
+        for item in &documentation {
+            let target = crate::util::sanitize_terminal(
+                item["anchor"]
+                    .as_str()
+                    .or_else(|| item["file"].as_str())
+                    .unwrap_or(""),
+            );
+            if item["evidence"].is_object() {
+                let source = crate::util::sanitize_terminal(
+                    item["evidence"]["anchor"].as_str().unwrap_or(""),
+                );
+                println!("  {target} (lead from source commentary in {source})");
+            } else {
+                println!("  {target} (explicit documentation backlink)");
+            }
+        }
+        println!();
+    }
+
     println!(
-        "## Context ({} tokens available after source)",
+        "## Graph context, including indexed source commentary ({} tokens available)",
         context_budget
     );
     println!();
@@ -645,7 +904,7 @@ fn compact_understand_json(value: &mut serde_json::Value) {
         return;
     }
 
-    for key in ["alternates", "next_actions"] {
+    for key in ["alternates", "next_actions", "documentation"] {
         if report
             .get(key)
             .and_then(Value::as_array)
@@ -1357,6 +1616,111 @@ mod tests {
             parsed: None,
             source_path: PathBuf::from(format!("{anchor}.adoc")),
         }
+    }
+
+    #[test]
+    fn understand_documentation_requires_an_exact_reference_or_explicit_backlink() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path();
+        for file in ["source.rs", "decision.adoc", "related.adoc"] {
+            std::fs::write(path.join(file), "").unwrap();
+        }
+        let mut graph = UnderstandGraph::new();
+        let mut root = backlink_fixture_node("aden://module/example/source.rs#publish");
+        root.doc
+            .attributes
+            .insert("source_file".into(), "source.rs".into());
+        root.doc.blocks.push(aden_core::Block::Paragraph(
+            "Publish the store snapshot.".into(),
+        ));
+        let root_index = graph.add_node(root.clone()).unwrap();
+        let mut callee = root.clone();
+        callee.doc.anchor = "aden://module/example/source.rs#prepare".into();
+        callee.doc.blocks[0] = aden_core::Block::Paragraph("See ADR-011 and ADR-404.".into());
+        let callee_index = graph.add_node(callee).unwrap();
+        let decision = "aden://doc/example/decision.adoc#adr-011";
+        let related = "aden://doc/example/related.adoc#snapshot";
+        let anchors = vec![decision.into(), related.into()];
+        let leads =
+            |graph: &UnderstandGraph, reachable: &[(aden_graph::NodeIndex, usize)], budget| {
+                understand_documentation(path, &root.doc, graph, graph, reachable, budget, |id| {
+                    Some(aden_graph::cache::resolve_anchor_from_list(id, &anchors))
+                })
+            };
+        // "Snapshot" alone does not give the related document evidence.
+        assert!(leads(&graph, &[], 256).is_empty());
+        let inferred = leads(&graph, &[(callee_index, 1)], 256);
+        assert_eq!(inferred.len(), 1);
+        assert_eq!(inferred[0]["anchor"], decision);
+        assert_eq!(inferred[0]["provenance"], "source_comment_reference");
+        assert_eq!(inferred[0]["evidence"]["dependency_depth"], 1);
+        assert!(leads(&graph, &[(callee_index, 1)], 1).is_empty());
+
+        let config = path.join("aden.toml");
+        std::fs::write(&config, "[profile]\nmode = 'Public'\n").unwrap();
+        assert!(leads(&graph, &[(callee_index, 1)], 256).is_empty());
+        std::fs::remove_file(config).unwrap();
+
+        let related_index = graph.add_node(backlink_fixture_node(related)).unwrap();
+        // An ADR's inferred mention can be incidental to the implementation.
+        graph.graph.add_edge(
+            related_index,
+            root_index,
+            aden_graph::AdenEdge {
+                edge_type: aden_core::EdgeType::Justifies,
+            },
+        );
+        assert_eq!(
+            leads(&graph, &[(callee_index, 1)], 256)[0]["anchor"],
+            decision
+        );
+        graph.graph.add_edge(
+            related_index,
+            root_index,
+            aden_graph::AdenEdge {
+                edge_type: aden_core::EdgeType::Documents,
+            },
+        );
+        let linked = leads(&graph, &[(callee_index, 1)], 256);
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0]["anchor"], related);
+        assert_eq!(linked[0]["provenance"], "explicit_documentation_backlink");
+
+        std::fs::write(path.join(".adenignore"), "related.adoc\ndecision.adoc\n").unwrap();
+        assert!(leads(&graph, &[(callee_index, 1)], 256).is_empty());
+    }
+
+    #[test]
+    fn understand_documentation_keeps_literal_markdown_citations_as_file_leads() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path();
+        std::fs::create_dir(path.join("docs")).unwrap();
+        for file in ["docs/transactions.md", "docs/ignored.md", "outside.md"] {
+            std::fs::write(path.join(file), "# An authored document\n").unwrap();
+        }
+        std::fs::write(path.join(".adenignore"), "docs/ignored.md\n").unwrap();
+        let graph = UnderstandGraph::new();
+        let mut root = backlink_fixture_node("aden://module/example/source.rs#publish");
+        root.doc
+            .attributes
+            .insert("source_file".into(), "source.rs".into());
+        root.doc.blocks.push(aden_core::Block::Paragraph(
+            "See [rollback](docs/transactions.md#rollback), /docs/transactions.md, \
+             https://example.com/docs/transactions.md, ../docs/transactions.md, \
+             docs/../outside.md, docs/ignored.md, or docs/missing.md."
+                .into(),
+        ));
+        let leads = understand_documentation(path, &root.doc, &graph, &graph, &[], 256, |_| {
+            panic!("file-only leads should not need graph anchor resolution")
+        });
+        assert_eq!(leads.len(), 1);
+        assert_eq!(leads[0]["file"], "docs/transactions.md");
+        assert_eq!(leads[0]["provenance"], "source_comment_file_reference");
+        assert_eq!(
+            leads[0]["evidence"]["reference"],
+            "docs/transactions.md#rollback"
+        );
+        assert!(leads[0].get("anchor").is_none());
     }
 
     /// Regression: `understand` printed the same backlink once per parallel

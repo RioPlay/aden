@@ -67,7 +67,7 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     // Load once for both the shared health formula and orphan breakdown. On a
     // failed graph load, preserve the existing health and orphan fallbacks.
     let (health, expected_n, actionable) =
-        match aden_graph::cache::build_from_directory_cached(path) {
+        match aden_graph::cache::build_from_directory_cached(&root) {
             Ok(graph) => {
                 let (expected, actionable) = crate::util::classify_orphans(&graph);
                 let health = crate::util::health_score_from_counts(
@@ -88,7 +88,7 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             .take(20)
             .map(|a| format!("orphan: {a}"))
             .collect();
-        let policy = aden_policy::audit_policy(path);
+        let policy = aden_policy::audit_policy(&root);
         let outcome = crate::commands::outcome::OutcomeEnvelope::evaluated(
             if health < 0.8 { 1 } else { 0 },
             actionable.len() + policy.violations.len(),

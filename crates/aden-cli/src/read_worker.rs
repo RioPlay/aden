@@ -6,6 +6,16 @@ use std::cell::RefCell;
 use std::io::{BufRead, Read, Write};
 
 const PROTOCOL: &str = "aden-read-worker-v1";
+const RESIDENT_COMMANDS: &[&str] = &[
+    "locate",
+    "understand",
+    "query",
+    "read",
+    "grep",
+    "tree",
+    "search",
+    "asm",
+];
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
@@ -22,7 +32,23 @@ thread_local! {
 /// Emit an already serialized machine response. Terminal CLI behavior is kept
 /// unchanged; a resident request captures exactly one body instead of stdout.
 pub(crate) fn emit_machine_body(body: String) {
-    let terminal_body = CAPTURE.with(|capture| {
+    if let Some(body) = capture_body(body) {
+        println!("{body}");
+    }
+}
+
+/// Like [`emit_machine_body`] for bodies that already carry their own line
+/// ending: terminal output is printed verbatim, with no added newline.
+pub(crate) fn emit_machine_body_raw(body: String) {
+    if let Some(body) = capture_body(body) {
+        print!("{body}");
+    }
+}
+
+/// Capture `body` for the active resident request, or hand it back for the
+/// terminal when no request is being served.
+fn capture_body(body: String) -> Option<String> {
+    CAPTURE.with(|capture| {
         let mut capture = capture.borrow_mut();
         let Some(state) = capture.as_mut() else {
             return Some(body);
@@ -33,24 +59,29 @@ pub(crate) fn emit_machine_body(body: String) {
             state.body = Some(body);
         }
         None
-    });
-    if let Some(body) = terminal_body {
-        println!("{body}");
-    }
+    })
 }
 
 pub(super) fn validate_command(cli: &super::Cli) -> Result<(), Box<dyn std::error::Error>> {
-    if !matches!(
-        cli.command,
-        super::Commands::Locate { .. }
-            | super::Commands::Understand { .. }
-            | super::Commands::Query { .. }
-    ) || cli.project.is_some()
-        || cli.human
-        || cli.verbose
-        || matches!(&cli.command, super::Commands::Query { format, .. } if format != "json")
-    {
-        return Err("resident worker accepts only quiet JSON locate, understand, and query reads without --project".into());
+    use super::Commands;
+    let supported = match &cli.command {
+        Commands::Locate { .. }
+        | Commands::Understand { .. }
+        | Commands::Read { .. }
+        | Commands::Grep { .. }
+        | Commands::Tree { .. }
+        | Commands::Search { .. } => true,
+        Commands::Query { format, .. } => format == "json",
+        Commands::Asm {
+            format,
+            out,
+            inspect,
+            ..
+        } => format == "json" && out.is_none() && !inspect,
+        _ => false,
+    };
+    if !supported || cli.project.is_some() || cli.human || cli.verbose {
+        return Err("resident worker accepts only quiet JSON locate, understand, query, read, grep, tree, search, and asm reads without --project".into());
     }
     Ok(())
 }
@@ -105,6 +136,7 @@ pub(super) fn serve() -> Result<(), Box<dyn std::error::Error>> {
     // No live store handle survives a request. Only immutable graph data can be
     // reused, and the normal command freshness observations still run each time.
     aden_graph::snapshot::set_session_cache_enabled(true);
+    aden_index::set_session_cache_enabled(true);
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     let stdout = std::io::stdout();
@@ -112,7 +144,11 @@ pub(super) fn serve() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(
         output,
         "{}",
-        serde_json::json!({"protocol": PROTOCOL, "pid": std::process::id()})
+        serde_json::json!({
+            "protocol": PROTOCOL,
+            "pid": std::process::id(),
+            "commands": RESIDENT_COMMANDS,
+        })
     )?;
     output.flush()?;
     loop {

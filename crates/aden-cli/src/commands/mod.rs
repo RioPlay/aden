@@ -11,6 +11,7 @@ pub mod diagnose;
 pub mod doctor;
 pub mod emergency;
 pub mod federation;
+pub mod findings;
 pub mod generate;
 pub mod grep;
 pub mod heal;

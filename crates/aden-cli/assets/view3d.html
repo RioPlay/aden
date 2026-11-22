@@ -30,9 +30,16 @@
   @keyframes twinkle { from { opacity: .5; } to { opacity: .95; } }
   @media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
   #graph { position: fixed; inset: 0; z-index: 1; }
-  #hdr { position: fixed; left: 14px; top: 12px; font-weight: 600; letter-spacing: .04em;
-    color: #b4befe; text-shadow: 0 0 18px rgba(137,180,250,.35); pointer-events: none; }
+  #hdr { position: fixed; left: 14px; top: 12px; z-index: 6; font-weight: 600; letter-spacing: .04em;
+    color: #b4befe; text-shadow: 0 0 18px rgba(137,180,250,.4); pointer-events: none; }
   #hdr small { color: #6c7086; font-weight: 400; }
+  #toolbar { position: fixed; top: 10px; right: 14px; z-index: 6; display: flex; align-items: center; gap: 6px; }
+  .topbtn { cursor: pointer; user-select: none; white-space: nowrap; text-decoration: none;
+    background: rgba(15,19,28,.9); border: 1px solid rgba(148,163,184,.2); border-radius: 8px;
+    padding: 4px 11px; color: #a6adc8; font-size: 12px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 4px 14px rgba(0,0,0,.35); }
+  .topbtn:hover { border-color: #89b4fa; color: #cdd6f4; text-decoration: none; }
+  body.hideui #toolbar { opacity: 0; pointer-events: none; }
   #search { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); width: 320px; z-index: 5; }
   #q { width: 100%; box-sizing: border-box; background: rgba(17,21,30,.92); border: 1px solid #313244;
     border-radius: 8px; padding: 8px 12px; color: #cdd6f4; font: 13px ui-sans-serif, system-ui, sans-serif;
@@ -137,10 +144,12 @@
   #region-legend .rl-title { font-size: 11px; font-weight: 600; color: #9399b2; letter-spacing: .04em; }
   #region-legend .rl-toggle { font-size: 11px; color: #45475a; }
   #region-legend .rl-body { padding: 0 12px 8px; max-height: 180px; overflow-y: auto; }
-  #region-legend .rl-row { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
-  #region-legend .rl-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
-  #region-legend .rl-label { font-size: 11px; color: #a6adc8;
+  #region-legend .rl-row { display: flex; align-items: center; gap: 7px; padding: 2px 4px; border-radius: 4px; }
+  #region-legend .rl-row:hover { background: rgba(137,180,250,.12); }
+  #region-legend .rl-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+  #region-legend .rl-label { flex: 1; font-size: 11px; color: #a6adc8;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #region-legend .rl-count { font-size: 10px; color: #6c7086; font-family: ui-monospace, monospace; flex-shrink: 0; }
   body.hideui #hover-card, body.hideui #region-legend { opacity: 0 !important; pointer-events: none; }
   body.viewer-unavailable > :not(#graph) { display: none !important; }
   .viewer-fallback { position: absolute; inset: 0; margin: auto; max-width: 36rem;
@@ -154,6 +163,12 @@
 <body>
 <div id="hdr">aden <small>· orbital</small></div>
 <div id="search"><input id="q" type="text" placeholder="search…  ( / )" autocomplete="off" spellcheck="false" aria-label="Search symbols"><div id="results"></div></div>
+<div id="toolbar">
+  <a id="twod-view" class="topbtn" style="display:none">2D view</a>
+  <button id="fit-btn" class="topbtn" type="button" title="Fit graph (f)">Fit</button>
+  <button id="mode-btn" class="topbtn" type="button" title="Cycle view preset (v)">Preset: live</button>
+  <button id="help-btn" class="topbtn" type="button" title="Keyboard shortcuts (?)">Help</button>
+</div>
 <div id="graph"></div>
 <!-- region hover card -->
 <div id="hover-card" aria-live="polite">
@@ -342,6 +357,7 @@ function updateHoverCard3d(n) {
   if (!n) {
     hoverCardEl3d.classList.remove('on');
     hoverCardEl3d.classList.add('idle');
+    positionLegend3d();
     return;
   }
   const region = regionOf3d(n);
@@ -358,6 +374,7 @@ function updateHoverCard3d(n) {
   document.getElementById('hc-file').textContent = filePath3d ? fileTail(filePath3d) : '';
   hoverCardEl3d.classList.remove('idle');
   hoverCardEl3d.classList.add('on');
+  positionLegend3d();
 }
 
 // ── region legend (3D) ────────────────────────────────────────────────────────
@@ -365,6 +382,13 @@ let legendCollapsed3d = false;
 function buildLegend3d() {
   const body = document.getElementById('rl-body');
   if (!body) return;
+  const counts = new Map();
+  if (typeof nodes !== 'undefined' && Array.isArray(nodes)) {
+    nodes.forEach(n => {
+      const r = regionOf3d(n);
+      counts.set(r, (counts.get(r) || 0) + 1);
+    });
+  }
   const regions = Object.keys(groupIdx).sort();
   if (!regions.length) {
     body.innerHTML = '<div class="rl-row"><span class="rl-label" style="color:#45475a;font-style:italic">no regions</span></div>';
@@ -372,9 +396,11 @@ function buildLegend3d() {
   }
   body.innerHTML = regions.map(r => {
     const col = palette[groupIdx[r] % palette.length];
+    const count = counts.get(r) || 0;
     return `<div class="rl-row" style="cursor:pointer" title="Jump to region" onclick="jumpToRegion3d(${escAttr(JSON.stringify(r))})">
-      <span class="rl-dot" style="background:${col};box-shadow:0 0 4px ${hexA(col,.4)}"></span>
+      <span class="rl-dot" style="background:${col};box-shadow:0 0 5px ${hexA(col,.45)}"></span>
       <span class="rl-label" title="${escAttr(r)}">${esc(r)}</span>
+      <span class="rl-count">${count}</span>
     </div>`;
   }).join('');
 }
@@ -397,15 +423,15 @@ function toggleLegend() {
   if (body) body.style.display = legendCollapsed3d ? 'none' : '';
   if (tog) tog.textContent = legendCollapsed3d ? '▸' : '▾';
 }
-// Dynamic top positioning: legend sits just below the hover card
+// Position legend below the hover card via ResizeObserver (no 60fps reflow loop).
 function positionLegend3d() {
   const legend = document.getElementById('region-legend');
   if (!legend || !hoverCardEl3d) return;
-  legend.style.top = (52 + hoverCardEl3d.offsetHeight + 8) + 'px';
+  const h = cardDismissed3d ? 0 : hoverCardEl3d.offsetHeight;
+  legend.style.top = (h ? 52 + h + 8 : 52) + 'px';
 }
-function legendPosLoop3d() {
-  requestAnimationFrame(legendPosLoop3d);
-  positionLegend3d();
+if (window.ResizeObserver && hoverCardEl3d) {
+  new ResizeObserver(positionLegend3d).observe(hoverCardEl3d);
 }
 
 // Build {nodes, links}; the same salience rule as the 2D view — the ambient
@@ -439,6 +465,19 @@ const bounds = { x: 0, y: 0, z: 0, r: 600 };
 const el = document.getElementById('graph');
 const Graph = create3DGraph(el);
 if (!Graph) return;
+try { Graph.renderer().setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); } catch {}
+const twodBtn = document.getElementById('twod-view');
+if (twodBtn && SIBLING && !SIBLING.includes('/*')) {
+  twodBtn.style.display = '';
+  twodBtn.addEventListener('click', e => {
+    e.preventDefault();
+    location.href = SIBLING + (focusNodeRef && focusNodeRef.anchor
+      ? '#a=' + encodeURIComponent(focusNodeRef.anchor) : '');
+  });
+}
+document.getElementById('fit-btn')?.addEventListener('click', () => fitAll());
+document.getElementById('mode-btn')?.addEventListener('click', () => cycleVerbosity());
+document.getElementById('help-btn')?.addEventListener('click', () => document.getElementById('overlay').classList.toggle('open'));
 Graph
   // Transparent clear color lets the CSS starfield show through; if the
   // renderer can't do alpha it falls back to the same dark tone, no harm.
@@ -460,7 +499,11 @@ Graph
   // pops by being BRIGHTER, not by murdering everything else.
   .nodeColor(n => (highlightNodes.size && !highlightNodes.has(n)) ? dimOf(colorOf(n), 0.5) : colorOf(n))
   .nodeOpacity(0.92)
-  .nodeResolution(16)
+  .nodeResolution(nodes.length > 1000 ? 10 : 14)
+  .warmupTicks(Math.min(50, Math.max(0, Math.floor(10000 / Math.max(1, nodes.length)))))
+  .cooldownTime(4500)
+  .d3AlphaDecay(0.045)
+  .d3VelocityDecay(0.5)
   // Aurora wisps: gentle 3D arcs in the blended hue of their endpoints —
   // connection fields shimmer in gradients across regions instead of reading
   // as straight gray wires; trails brighten the same hue.
@@ -489,7 +532,7 @@ Graph
   .onNodeRightClick(n => { const u = editorUrl(n); if (u) window.location.href = u; })
   .onBackgroundClick(() => { updateHoverCard3d(null); /* keep focus; Esc/f manage the camera */ });
 Graph.graphData({ nodes, links });
-legendPosLoop3d();
+positionLegend3d();
 // Build the legend once the group index is ready
 buildLegend3d();
 
@@ -576,7 +619,12 @@ function computeBounds() {
   Graph.linkDirectionalParticleWidth(Math.min(4.5, Math.max(2, bounds.r / 400)));
   Graph.linkWidth(Graph.linkWidth());   // re-pull the accessor below
 }
-Graph.onEngineStop(computeBounds);
+let engineStopped3d = false;
+Graph.onEngineStop(() => {
+  engineStopped3d = true;
+  computeBounds();
+  updateBubbles();
+});
 setTimeout(computeBounds, 2500);
 // Pan clamp: released the drag with the pivot outside the graph? Glide it back
 // to the boundary instead of letting the next orbit spin around empty space.
@@ -671,55 +719,65 @@ function editorUrl(n) {
 // Focus: camera glides to a comfortable distance in front of the node,
 // neighbors light up, panel opens. The layout itself never moves.
 // Re-trigger every accessor that depends on highlight/focus state.
+let enlivenRaf = 0;
+function scheduleEnliven() {
+  if (enlivenRaf) return;
+  enlivenRaf = requestAnimationFrame(() => { enlivenRaf = 0; enliven(); });
+}
 function repaint() {
   Graph.nodeColor(Graph.nodeColor()).nodeVal(Graph.nodeVal())
        .linkVisibility(Graph.linkVisibility()).linkColor(Graph.linkColor())
        .linkWidth(Graph.linkWidth()).linkDirectionalParticles(Graph.linkDirectionalParticles());
-  setTimeout(enliven, 60);   // accessor refresh can swap materials — re-juice
+  scheduleEnliven();
 }
 
 // ── sustenance: self-lit materials, sculpted silhouettes, breathing focus ────
-// The bundle hides THREE, but the LIVE objects don't hide anything: every
-// node mesh exposes its material (emissive = self-glow on true black), its
-// scale (sculpting: docs flatten into tablets, terms stretch into crystals,
-// code stays spherical), and the scene exposes its lights. Mutated in place,
-// no constructors needed.
+// Pool additive cosmic halo materials by hex color so large graphs share ~64
+// GPU materials instead of cloning thousands of separate shader programs.
 const DOC_KINDS3 = new Set(['Adr', 'Runbook', 'Plan', 'Context', 'Manifest', 'Spec', 'Note']);
+const haloMatPool = new Map();
+function getHaloMaterial(srcMat) {
+  const key = srcMat.color.getHexString();
+  let mat = haloMatPool.get(key);
+  if (!mat) {
+    mat = srcMat.clone();
+    mat.transparent = true;
+    mat.opacity = 0.16;
+    mat.depthWrite = false;
+    mat.blending = 2; // THREE.AdditiveBlending
+    mat.color.copy(srcMat.color);
+    mat.emissive.copy(srcMat.color).multiplyScalar(0.68);
+    haloMatPool.set(key, mat);
+  }
+  return mat;
+}
 function enliven() {
   Graph.scene().traverse(o => {
     if (o.__isAura) return;   // never re-process the halos themselves
     if (o.isMesh && o.material && o.material.emissive && o.material.color && o.__data) {
-      // inner light — but restrained: too much emissive flattens the sphere
-      // into a matte disc (no shading = no form). 0.22 keeps the glow AND
-      // the modelling from the directional light.
-      o.material.emissive.copy(o.material.color).multiplyScalar(0.22);
-      // aura: a cloned, enlarged, translucent shell of the orb itself —
-      // it's a CHILD, so it follows position, silhouette and breathing free.
+      o.material.emissive.copy(o.material.color).multiplyScalar(0.28);
       if (!o.__aura) {
-        const halo = o.clone(false);   // no children — just the shell
-        halo.material = o.material.clone();
-        halo.material.transparent = true;
-        // tight + dim: the glow hugs the orb so the void stays OLED-black
-        halo.material.opacity = 0.09;
-        halo.material.depthWrite = false;
+        const halo = o.clone(false);
+        halo.material = getHaloMaterial(o.material);
         halo.position.set(0, 0, 0);
-        halo.scale.set(1.55, 1.55, 1.55);
+        halo.scale.set(1.58, 1.58, 1.58);
         halo.__isAura = true;
+        halo.raycast = () => {};
         o.add(halo);
         o.__aura = halo;
+      } else {
+        const expected = getHaloMaterial(o.material);
+        if (o.__aura.material !== expected) o.__aura.material = expected;
       }
-      // keep the halo's hue in sync (the lib pools/swaps materials by color)
-      o.__aura.material.color.copy(o.material.color);
-      o.__aura.material.emissive.copy(o.material.color).multiplyScalar(0.6);
       const k = o.__data.kind;
       if (k === 'Term') o.scale.set(0.72, 1.45, 0.72);          // crystal
       else if (DOC_KINDS3.has(k)) o.scale.set(1.18, 0.45, 1.18); // tablet
     }
-    if (o.isDirectionalLight) o.intensity = 1.0;   // more modelling on the form
-    if (o.isAmbientLight) o.intensity = Math.min(o.intensity, 0.45);
+    if (o.isDirectionalLight) o.intensity = 1.15;   // more modelling on the form
+    if (o.isAmbientLight) o.intensity = Math.min(o.intensity, 0.42);
   });
 }
-setTimeout(enliven, 1200);
+setTimeout(enliven, 900);
 
 // ── bubble enclosures: each galaxy wrapped in a soft membrane ────────────────
 // The wide-cast net: one translucent sphere per module, sized to enclose all
@@ -812,8 +870,11 @@ function updateBubbles() {
     w.mesh.position.set(cx, cy, cz);
   });
 }
-setTimeout(updateBubbles, 2600);
-setInterval(updateBubbles, 1500);
+setTimeout(updateBubbles, 2200);
+const bubbleTimer = setInterval(() => {
+  if (engineStopped3d) { clearInterval(bubbleTimer); return; }
+  updateBubbles();
+}, 1500);
 function toggleBubbles() {
   bubblesOn = !bubblesOn;
   if (bubblesOn) updateBubbles();
@@ -1015,6 +1076,8 @@ const VMODES = ['focus', 'map', 'live'];
 let vmode = localStorage.getItem('aden3d-verbosity') || 'live';
 function applyVerbosity(m, announce) {
   vmode = m;
+  const mb = document.getElementById('mode-btn');
+  if (mb) mb.textContent = `Preset: ${m}`;
   try { localStorage.setItem('aden3d-verbosity', m); } catch (e) {}
   if (m === 'focus') {
     stopTour(); streamsManual = false; stopStreams();

@@ -35,7 +35,7 @@ ambiguous names return sorted candidates without guessing. Run `aden locate` or
   `aden init --templates` only when the legacy `.agent/` governance workspace
   and customizable `.adenignore` are wanted.
 - `aden gen` compiles every function, struct, and trait (public *and* private) into the per-user project store (run `aden store path` to see its location; store-first — no files are emitted into your working tree).
-- `aden check` guarantees there are no broken references or duplicate anchors.
+- `aden check` validates references and checks for duplicate anchors.
 - `aden ask` gives you a token-bounded context prompt. Paste it into ChatGPT, Claude, or your local LLM and ask follow-ups.
 - `aden query` prints a dependency map so you can see what calls what.
 
@@ -91,6 +91,24 @@ aden heal . --propose > drift-report.adoc
 ----
 
 `aden gen` extracts current signatures; `aden check` validates references; `aden heal` compares emitted contracts to source hashes and emits `StaleHash`/`SignatureMismatch` events. Proposals are written to `.aden/proposals/` as AsciiDoc patches — review before applying.
+
+=== Review claims linked to code and tests
+
+For projects with `aden-findings.toml`, start from a changed code line or a
+documented claim to see the other passages linked to it. Either endpoint can
+be used to look up the same finding.
+
+[source,bash]
+----
+aden findings --human --file src/config.rs --line 42
+aden findings --check
+----
+
+Use `--check` as an explicit CI step for authored findings. It requires at
+least one match and fails when a linked source needs review or the manifest
+records a contradiction. When it fails, inspect the passages, run the relevant
+behavioral tests, and update the source or the finding based on what you verify.
+See <<findings-command,the findings command reference>> for the manifest format.
 
 == Workflow 4: AI-Assisted Code Review
 

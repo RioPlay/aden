@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! One bounded, replaceable CLI read worker per MCP server.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -63,8 +63,22 @@ struct Worker {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     pid: u64,
+    supported_commands: HashSet<String>,
     stderr: std::sync::Arc<std::sync::Mutex<VecDeque<u8>>>,
     stderr_task: tokio::task::JoinHandle<()>,
+}
+
+fn default_resident_commands() -> HashSet<String> {
+    ["locate", "understand", "query"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+impl Worker {
+    fn supports_command(&self, tool: &str) -> bool {
+        self.supported_commands.contains(tool)
+    }
 }
 
 #[derive(Debug)]
@@ -170,6 +184,18 @@ impl Worker {
                 "CLI uses unsupported resident read protocol {protocol}"
             )));
         }
+        if let Some(commands) = hello.get("commands").and_then(serde_json::Value::as_array) {
+            let mut parsed = HashSet::new();
+            for command in commands {
+                let Some(name) = command.as_str() else {
+                    return Err(StartupError::Transient(
+                        "worker handshake commands list must contain strings".into(),
+                    ));
+                };
+                parsed.insert(name.to_string());
+            }
+            worker.supported_commands = parsed;
+        }
         Ok(worker)
     }
 
@@ -203,6 +229,7 @@ impl Worker {
             input,
             output,
             pid,
+            supported_commands: default_resident_commands(),
             stderr,
             stderr_task,
         })
@@ -307,6 +334,154 @@ async fn read_frame<R: AsyncBufRead + Unpin>(output: &mut R) -> Result<serde_jso
     }
 }
 
+const RESIDENT_SEARCH_MAX_LIMIT: usize = 500;
+
+fn long_option_takes_value(name: &str) -> bool {
+    matches!(
+        name,
+        "project"
+            | "format"
+            | "out"
+            | "limit"
+            | "offset"
+            | "symbol"
+            | "caller-of"
+            | "show-context"
+            | "from"
+            | "edge-type"
+            | "edge-types"
+            | "backlinks"
+            | "impact"
+            | "depth"
+            | "budget"
+            | "max-results"
+            | "doc-type"
+            | "cursor"
+            | "start-line"
+            | "end-line"
+            | "max-bytes"
+            | "expected-hash"
+            | "start-byte"
+            | "include-tag"
+            | "exclude-tag"
+            | "set-attr"
+            | "profile"
+            | "symbol-depth"
+    )
+}
+
+fn short_option_takes_value(tool: &str, flag: char) -> bool {
+    match flag {
+        'p' => true,
+        'F' | 'C' | 'c' | 'n' if tool == "locate" => true,
+        's' if tool == "locate" => true,
+        'n' if tool == "grep" => true,
+        'd' if tool == "tree" => true,
+        'b' if tool == "understand" => true,
+        'f' | 'e' | 'd' | 'b' | 'i' | 'F' if tool == "query" => true,
+        'f' | 'd' | 'b' | 'e' | 'o' | 'F' if tool == "asm" => true,
+        _ => false,
+    }
+}
+
+fn take_long_value<'a>(
+    inline: Option<&'a str>,
+    args: &mut impl Iterator<Item = &'a str>,
+) -> &'a str {
+    inline.or_else(|| args.next()).unwrap_or("")
+}
+
+fn take_short_value<'a>(inline: &'a str, args: &mut impl Iterator<Item = &'a str>) -> &'a str {
+    if inline.is_empty() {
+        args.next().unwrap_or("")
+    } else {
+        inline.strip_prefix('=').unwrap_or(inline)
+    }
+}
+
+/// Whether an invocation can run on the resident worker. The worker validates
+/// again; this routes invocations it would reject (other tools, process-global
+/// options, non-JSON/file output, or huge pages) to the one-shot CLI cleanly.
+fn supports_resident_tool(tool: &str, args: &[&str]) -> bool {
+    if !matches!(
+        tool,
+        "locate" | "understand" | "query" | "read" | "grep" | "tree" | "search" | "asm"
+    ) {
+        return false;
+    }
+    let mut format = None;
+    let mut writes_file = false;
+    let mut inspect = false;
+    let mut unlimited = false;
+    let mut search_limit: Option<usize> = None;
+    let mut args = args.iter().copied();
+    if args.clone().next() == Some(tool) {
+        let _ = args.next();
+    }
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            break;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            let (name, inline) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            match name {
+                "human" | "verbose" | "project" => return false,
+                "unlimited" => unlimited = true,
+                "format" => format = Some(take_long_value(inline, &mut args)),
+                "out" => {
+                    writes_file = true;
+                    let _ = take_long_value(inline, &mut args);
+                }
+                "inspect" => inspect = true,
+                "limit" => {
+                    let value = take_long_value(inline, &mut args);
+                    if tool == "search" {
+                        search_limit = value.parse::<usize>().ok().or(Some(usize::MAX));
+                    }
+                }
+                _ if long_option_takes_value(name) && inline.is_none() => {
+                    let _ = args.next();
+                }
+                _ => {}
+            }
+        } else if let Some(short) = arg.strip_prefix('-') {
+            for (index, flag) in short.char_indices() {
+                let rest = &short[index + flag.len_utf8()..];
+                match flag {
+                    'v' | 'p' => return false,
+                    'u' => unlimited = true,
+                    'o' => {
+                        writes_file = true;
+                        let _ = take_short_value(rest, &mut args);
+                        break;
+                    }
+                    'F' if matches!(tool, "locate" | "query" | "asm") => {
+                        format = Some(take_short_value(rest, &mut args));
+                        break;
+                    }
+                    _ if short_option_takes_value(tool, flag) => {
+                        let _ = take_short_value(rest, &mut args);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let json = format.is_none_or(|format| format == "json");
+    match tool {
+        "locate" | "understand" | "read" | "grep" => true,
+        "tree" => !unlimited,
+        "search" => search_limit.is_none_or(|limit| limit <= RESIDENT_SEARCH_MAX_LIMIT),
+        "query" => json,
+        "asm" => json && !writes_file && !inspect,
+        _ => false,
+    }
+}
+
 #[derive(Default)]
 struct State {
     worker: Option<Worker>,
@@ -326,7 +501,7 @@ impl ResidentReads {
         args: &[&str],
         deadline: Duration,
     ) -> Result<String, String> {
-        if !matches!(tool, "locate" | "understand" | "query")
+        if !supports_resident_tool(tool, args)
             || std::env::var("ADEN_READ_SESSION").as_deref() == Ok("0")
         {
             return super::run_aden_command_with_timeout(project_dir, tool, args, deadline).await;
@@ -432,6 +607,11 @@ impl ResidentReads {
                 .await;
             return Err(super::preserve_cli_error_for_mcp(&error));
         }
+        if !worker.supports_command(tool) {
+            state.worker = Some(worker);
+            drop(state);
+            return super::run_aden_command_with_timeout(project_dir, tool, args, deadline).await;
+        }
         let (ok, stdout, stderr) = worker
             .request(args)
             .await
@@ -530,6 +710,133 @@ mod tests {
         assert!(!diagnostic.contains('\n'));
         assert!(diagnostic.contains("using serial execution for this call"));
         assert!(diagnostic.contains("retried on the next read"));
+    }
+
+    #[test]
+    fn resident_routing_accepts_quiet_json_reads_and_rejects_everything_else() {
+        let accepted: &[(&str, &[&str])] = &[
+            ("locate", &["locate", "--symbol", "foo", "-F", "plain", "."]),
+            ("understand", &["understand", "foo", "."]),
+            ("read", &["read", "src/lib.rs", ".", "--start-line", "1"]),
+            ("grep", &["grep", "-i", "-n", "5", "needle", "."]),
+            ("grep", &["grep", "--", "--human", "."]),
+            ("tree", &["tree", ".", "--files"]),
+            ("search", &["search", "query", ".", "--json"]),
+            ("query", &["query", "--from", "foo", "."]),
+            ("query", &["query", "--format", "json", "."]),
+            ("query", &["query", "--format=json", "."]),
+            ("query", &["query", "-F", "json", "."]),
+            ("query", &["query", "-Fjson", "."]),
+            ("locate", &["locate", "-sF", "."]),
+            ("locate", &["locate", "-sv", "."]),
+            ("asm", &["asm", "--from", "foo", "--strict", "."]),
+            ("asm", &["asm", "--from", "foo", "-F", "json", "--silent"]),
+            ("asm", &["asm", "--from", "foo", "-F=json", "."]),
+            ("asm", &["asm", "--from", "foo", "-sFjson"]),
+            ("search", &["search", "query", "--limit", "50", "."]),
+            ("search", &["search", "query", "--limit=500", "."]),
+        ];
+        for (tool, args) in accepted {
+            assert!(supports_resident_tool(tool, args), "{tool} {args:?}");
+        }
+        let rejected: &[(&str, &[&str])] = &[
+            ("gen", &["gen", "."]),
+            ("ask", &["ask", "question", "."]),
+            ("status", &["status", "."]),
+            ("locate", &["locate", "--symbol", "foo", "--human"]),
+            ("locate", &["locate", "--symbol", "foo", "--verbose"]),
+            ("locate", &["locate", "--symbol", "foo", "-v"]),
+            ("locate", &["locate", "-sF", "-v", "."]),
+            ("grep", &["grep", "-iv", "needle"]),
+            ("tree", &["tree", "--unlimited", "."]),
+            ("tree", &["tree", "-u", "."]),
+            ("search", &["search", "query", "--limit", "501", "."]),
+            ("search", &["search", "query", "--limit=1000", "."]),
+            ("read", &["read", "a.rs", "--project", "."]),
+            ("read", &["read", "a.rs", "--project=."]),
+            ("tree", &["tree", "-p", "."]),
+            ("search", &["search", "query", "-p."]),
+            ("query", &["query", "--format", "table", "."]),
+            ("query", &["query", "--format=table", "."]),
+            ("query", &["query", "-F", "table", "."]),
+            ("query", &["query", "-Ftable", "."]),
+            ("asm", &["asm", "--from", "foo", "--format", "llm"]),
+            ("asm", &["asm", "--from", "foo", "-Fadg"]),
+            ("asm", &["asm", "--from", "foo", "-F=llm"]),
+            ("asm", &["asm", "--from", "foo", "--inspect"]),
+            ("asm", &["asm", "--from", "foo", "-o", "out.txt"]),
+            ("asm", &["asm", "--from", "foo", "-oout.txt"]),
+            ("asm", &["asm", "--from", "foo", "--out", "out.txt"]),
+            ("asm", &["asm", "--from", "foo", "--out=out.txt"]),
+        ];
+        for (tool, args) in rejected {
+            assert!(!supports_resident_tool(tool, args), "{tool} {args:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_without_commands_keeps_legacy_v1_subset_and_falls_back_cleanly() {
+        let _guard = crate::tests::MCP_ROOT_TEST_ENV.lock().await;
+        let _binary = RestoreBinary::pin_current_cli();
+        let root = recovery_fixture();
+        let mut command = if cfg!(windows) {
+            let mut command = tokio::process::Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::Out.WriteLine(('{\"protocol\":\"aden-read-worker-v1\",\"pid\":' + $PID + '}')); while ($null -ne [Console]::ReadLine()) { }",
+            ]);
+            command
+        } else {
+            let mut command = tokio::process::Command::new("sh");
+            command.args([
+                "-c",
+                "printf '{\"protocol\":\"aden-read-worker-v1\",\"pid\":%s}\\n' \"$$\"; while IFS= read -r _; do :; done",
+            ]);
+            command
+        };
+        command
+            .current_dir(root.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let mut worker = Worker::from_child(
+            &root.path().canonicalize().unwrap(),
+            BinaryIdentity::current(),
+            child,
+        )
+        .unwrap();
+        let hello = read_frame(&mut worker.output).await.unwrap();
+        assert_eq!(hello["protocol"], PROTOCOL);
+        assert_eq!(hello["pid"], pid);
+        if let Some(commands) = hello.get("commands").and_then(serde_json::Value::as_array) {
+            worker.supported_commands = commands
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect();
+        }
+        assert!(worker.supports_command("locate"));
+        assert!(!worker.supports_command("grep"));
+        let reads = ResidentReads::default();
+        reads.state.lock().await.worker = Some(worker);
+        let body = reads
+            .execute(
+                root.path(),
+                "grep",
+                &["grep", "recovery_symbol", "."],
+                Duration::from_secs(10),
+            )
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["total"].as_u64().unwrap() >= 1, "{parsed}");
+        // Legacy worker stayed warm for its supported commands.
+        assert!(reads.state.lock().await.worker.is_some());
     }
 
     fn startup_failure_command(root: &Path, unsupported: bool) -> tokio::process::Command {

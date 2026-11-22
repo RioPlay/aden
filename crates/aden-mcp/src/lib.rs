@@ -2713,21 +2713,81 @@ fn redact_command_result(value: &mut serde_json::Value) {
 }
 
 fn redact_command_text(text: &str) -> String {
-    // Paths in prose and quoted paths may contain spaces. Once an absolute
-    // path is recognized, redact the whole string instead of guessing where
-    // that path ends and potentially exposing its trailing segments.
-    let bytes = text.as_bytes();
-    if text.starts_with('/')
-        || text.starts_with("\\\\")
-        || (bytes.first().is_some_and(u8::is_ascii_alphabetic)
-            && bytes.get(1) == Some(&b':')
-            && matches!(bytes.get(2), Some(b'\\' | b'/')))
-        || redact_abs_paths(text) != text
-    {
-        "<path>".into()
-    } else {
-        text.to_string()
+    // A token ending at `:`, `,`, a quote, or a bracket is provably complete, so
+    // `failed to open C:\repo\src\a.rs: access denied` keeps the reason that
+    // makes it actionable. When the token ends at whitespace instead, the next
+    // word may still belong to the path (`C:\Program Files\...`), so the whole
+    // string is withheld rather than risking a partial path in the response.
+    if redaction_boundary_ambiguous(text) {
+        return "<path>".into();
     }
+    redact_abs_paths(text)
+}
+
+/// End (exclusive) of the absolute path token starting at `start`. A path that
+/// opens right after a quote is bounded by that quote so interior spaces stay
+/// inside the redaction.
+fn path_token_end(s: &str, start: usize) -> usize {
+    let quote = s[..start]
+        .chars()
+        .next_back()
+        .filter(|q| matches!(q, '\'' | '"'));
+    let mut end = start;
+    for (idx, c) in s[start..].char_indices().map(|(o, c)| (start + o, c)) {
+        if idx == start {
+            end = idx + c.len_utf8();
+            continue;
+        }
+        let stop = match quote {
+            Some(q) => c == q,
+            None => {
+                c.is_whitespace()
+                    || matches!(c, '\'' | '"' | ')' | ']' | ',' | ';')
+                    // In prose a colon ends the token (`path: access denied`);
+                    // inside `C:\...`, `\\?\C:\...`, and `path:line:col` it
+                    // does not.
+                    || (c == ':'
+                        && s[idx + 1..]
+                            .chars()
+                            .next()
+                            .is_none_or(char::is_whitespace))
+            }
+        };
+        if stop {
+            break;
+        }
+        end = idx + c.len_utf8();
+    }
+    end
+}
+
+fn redaction_boundary_ambiguous(text: &str) -> bool {
+    for (i, c) in text.char_indices() {
+        let token_start = i == 0
+            || text[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|p| p.is_whitespace() || matches!(p, '(' | '[' | '='));
+        let tail = &text[i..];
+        let drive = tail.as_bytes().get(1) == Some(&b':')
+            && c.is_ascii_alphabetic()
+            && matches!(tail.as_bytes().get(2), Some(b'\\' | b'/'));
+        let unix_or_unc = (c == '/'
+            && tail
+                .as_bytes()
+                .get(1)
+                .is_some_and(u8::is_ascii_alphanumeric))
+            || (c == '\\' && tail.as_bytes().get(1) == Some(&b'\\'));
+        if !token_start || !(drive || unix_or_unc) {
+            continue;
+        }
+        let rest = &text[path_token_end(text, i)..];
+        let delimited = rest.is_empty() || rest.starts_with([':', ',', ';', ')', ']', '\'', '"']);
+        if !delimited {
+            return true;
+        }
+    }
+    false
 }
 
 fn preserve_ready_failure(stderr: &str, stdout: &str) -> String {
@@ -3430,6 +3490,17 @@ pub fn preserve_cli_error_for_mcp(raw: &str) -> String {
         .unwrap_or_else(|| sanitize_error(raw))
 }
 
+/// Advance a char iterator to `end`, exclusive, so a redacted token is not
+/// re-scanned for nested path starts.
+fn skip_token(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, end: usize) {
+    while let Some(&(idx, _)) = chars.peek() {
+        if idx >= end {
+            break;
+        }
+        chars.next();
+    }
+}
+
 /// Replace absolute filesystem paths in `s` with a `<path>` placeholder so host
 /// directory layout does not leak to the MCP client.
 fn redact_abs_paths(s: &str) -> String {
@@ -3447,14 +3518,8 @@ fn redact_abs_paths(s: &str) -> String {
 
         // Unix-style absolute path: / followed by alphanumeric
         if c == '/' && token_start && s[i + 1..].starts_with(|n: char| n.is_alphanumeric()) {
-            // consume the rest of the path token
-            while let Some(&(_, nc)) = chars.peek() {
-                if nc.is_whitespace() || matches!(nc, '\'' | '"' | ')' | ']' | ',') {
-                    break;
-                }
-                chars.next();
-            }
             out.push_str("<path>");
+            skip_token(&mut chars, path_token_end(s, i));
             continue;
         }
 
@@ -3467,13 +3532,8 @@ fn redact_abs_paths(s: &str) -> String {
             && tail.as_bytes().get(1) == Some(&b':')
             && matches!(tail.as_bytes().get(2), Some(b'\\' | b'/'))
         {
-            while let Some(&(_, nc)) = chars.peek() {
-                if nc.is_whitespace() || matches!(nc, '\'' | '"' | ')' | ']' | ',') {
-                    break;
-                }
-                chars.next();
-            }
             out.push_str("<path>");
+            skip_token(&mut chars, path_token_end(s, i));
             continue;
         }
 
@@ -3490,13 +3550,8 @@ fn redact_abs_paths(s: &str) -> String {
                 || (matches!(tail.as_bytes().get(2), Some(b'?' | b'.'))
                     && matches!(tail.as_bytes().get(3), Some(b'\\' | b'/'))))
         {
-            while let Some(&(_, nc)) = chars.peek() {
-                if nc.is_whitespace() || matches!(nc, '\'' | '"' | ')' | ']' | ',') {
-                    break;
-                }
-                chars.next();
-            }
             out.push_str("<path>");
+            skip_token(&mut chars, path_token_end(s, i));
             continue;
         }
 
@@ -5352,6 +5407,47 @@ mod tests {
     }
 
     #[test]
+    fn redact_command_text_keeps_diagnostic_prose() {
+        assert_eq!(
+            redact_command_text("failed to read C:\\repo\\src\\a.rs: access denied"),
+            "failed to read <path>: access denied"
+        );
+        assert_eq!(
+            redact_command_text("open \"C:\\Program Files\\repo\\a.ts\": denied"),
+            "open \"<path>\": denied"
+        );
+        // A value that is itself a path still redacts completely.
+        assert_eq!(redact_command_text("E:/Projects/T3 Code"), "<path>");
+        // An unquoted spaced path cannot be delimited, so refuse to guess.
+        assert_eq!(
+            redact_command_text("failed to read C:\\Program Files\\repo\\a.rs: denied"),
+            "<path>"
+        );
+        assert_eq!(
+            redact_command_text("no absolute path here"),
+            "no absolute path here"
+        );
+    }
+
+    #[test]
+    fn redact_command_text_withholds_ambiguous_trailing_segments() {
+        // The word after the space may be the last path segment, so a partial
+        // path must never reach the caller.
+        for text in [
+            "failed to open C:\\Users\\John Smith: denied",
+            "failed to open C:\\Program Files\\app\\main.rs: denied",
+            "failed to open /home/John Smith/app: denied",
+        ] {
+            assert_eq!(redact_command_text(text), "<path>", "{text}");
+        }
+        // A token ending at punctuation is complete, so prose survives.
+        assert_eq!(
+            redact_command_text("failed to open C:\\repo\\a.rs, retry later"),
+            "failed to open <path>, retry later"
+        );
+    }
+
+    #[test]
     fn redact_abs_paths_handles_windows_drive_letters() {
         for path in [
             r"\\?\C:\Users\repo\main.rs",
@@ -5398,6 +5494,15 @@ mod tests {
         // UNC-style Windows path (network share).
         let out = redact_abs_paths(r"Path at \\server\share\repo");
         assert_eq!(out, "Path at <path>");
+
+        // Device-prefixed drive paths keep their drive colon inside the
+        // redaction instead of stopping at `:`.
+        let out = redact_abs_paths(r"Path at \\?\C:\Users\repo\main.rs");
+        assert_eq!(out, "Path at <path>");
+
+        // A quoted path keeps interior spaces; prose after it survives.
+        let out = redact_abs_paths("at \"C:\\Users\\unknown\\my repo\\main.rs\": eof");
+        assert_eq!(out, "at \"<path>\": eof");
     }
 
     #[test]
