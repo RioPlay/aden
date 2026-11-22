@@ -466,6 +466,7 @@ fn arg_default(tool: &str, arg: &str) -> Option<serde_json::Value> {
         ("communities", "min_size") => Some(serde_json::json!(2)),
         ("communities", "limit") => Some(serde_json::json!(30)),
         ("communities", "resolution") => Some(serde_json::json!(1.0)),
+        ("communities", "max_members") => Some(serde_json::json!(50)),
         ("viz", "mode") => Some(serde_json::json!("blast")),
         ("viz", "depth") => Some(serde_json::json!(2)),
         ("viz", "format") => Some(serde_json::json!("mermaid")),
@@ -1320,11 +1321,17 @@ static TOOLS: &[ToolSpec] = &[
         description: "Detect functional communities — clusters of symbols that call/use each \
                       other densely (modularity community detection), independent of the \
                       directory layout. Good for orienting in a codebase. `min_size` filters \
-                      out small clusters (default 2).",
+                      out small clusters (default 2); `limit` (CLI `--top`) caps returned \
+                      clusters largest-first (default 30); `summary` (CLI `--summary`) returns \
+                      short `sample_members` previews instead of full member lists; \
+                      `max_members` (CLI `--max-members`, default 50, 0 = unlimited) caps \
+                      members per cluster.",
         args: &[
             ("min_size", "integer"),
             ("limit", "integer"),
             ("resolution", "number"),
+            ("summary", "boolean"),
+            ("max_members", "integer"),
             ("path", "string"),
         ],
         effect: Effect::Read,
