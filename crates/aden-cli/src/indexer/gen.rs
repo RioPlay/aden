@@ -22,6 +22,34 @@ use crate::util::{
     normalize_sep, sanitize_source_file, save_gen_cache,
 };
 
+const COALESCED_DOC_BATCH_LIMIT: usize = 512;
+
+#[derive(Default)]
+struct CoalescedDocBatch {
+    docs: Vec<(aden_core::Document, String)>,
+    index: std::collections::HashMap<String, usize>,
+}
+
+impl CoalescedDocBatch {
+    fn push(&mut self, item: (aden_core::Document, String)) {
+        if let Some(&index) = self.index.get(&item.0.anchor) {
+            self.docs[index] = item;
+        } else {
+            self.index.insert(item.0.anchor.clone(), self.docs.len());
+            self.docs.push(item);
+        }
+    }
+
+    fn flush(&mut self, storage: &impl GraphStorage) -> Result<(), aden_store::StoreError> {
+        if !self.docs.is_empty() {
+            storage.put_documents_bulk(&self.docs)?;
+            self.docs.clear();
+            self.index.clear();
+        }
+        Ok(())
+    }
+}
+
 /// One stored symbol plus the compact data the linker needs. Carrying callee
 /// names out of the parse phase means linking never has to reload the (huge)
 /// document store to rebuild the call graph.
@@ -963,6 +991,12 @@ fn cmd_gen_inner(
                     recovery_journal_dirty = false;
                 }
             }
+            let mut coalesced = CoalescedDocBatch::default();
+            #[cfg(debug_assertions)]
+            let per_file = std::env::var_os("ADEN_TEST_FAIL_AFTER_FILE_WRITE").is_some()
+                || std::env::var_os("ADEN_TEST_HOLD_AFTER_FILE_WRITE").is_some();
+            #[cfg(not(debug_assertions))]
+            let per_file = false;
             for (completed, item) in work_items.into_iter().enumerate() {
                 super::generation_job::checkpoint(
                     "persist_prune",
@@ -1003,18 +1037,18 @@ fn cmd_gen_inner(
                         conflicts,
                     } => {
                         trace.increment("reindexed_files");
-                        // Documents + their base snapshots commit in ONE atomic
-                        // fjall batch per file (snapshots were already emitted in
-                        // the parallel pass). Per-file — not one global — batching is
-                        // deliberate: an atomic batch gives every item the same
-                        // sequence number, so keys within a batch must be unique.
-                        // Anchors are unique within a single source file, and files
-                        // commit in sorted order (see the `work_items.sort_by`
-                        // above), so the cross-file basename-collision rule
-                        // (last-sorted-source wins) is preserved.
-                        storage.put_documents_bulk(&docs).map_err(|e| {
-                            format!("Failed to store documents for {source_path}: {e}")
-                        })?;
+                        if per_file {
+                            storage.put_documents_bulk(&docs).map_err(|e| {
+                                format!("Failed to store documents for {source_path}: {e}")
+                            })?;
+                        } else {
+                            for doc in docs {
+                                coalesced.push(doc);
+                                if coalesced.docs.len() >= COALESCED_DOC_BATCH_LIMIT {
+                                    coalesced.flush(&storage)?;
+                                }
+                            }
+                        }
                         #[cfg(debug_assertions)]
                         if std::env::var("ADEN_TEST_FAIL_AFTER_FILE_WRITE")
                             .ok()
@@ -1121,6 +1155,7 @@ fn cmd_gen_inner(
                 }
             }
 
+            coalesced.flush(&storage)?;
             batch_start += batch_len;
         }
         trace.count("parse_batches", batch_count);
@@ -1218,16 +1253,21 @@ fn cmd_gen_inner(
                 }
             }
         }
+        let mut prune_batch = Vec::with_capacity(256);
         for anchor in &stale {
             if anchor.starts_with("mod-") {
                 continue;
             }
-            match storage.delete_node(anchor) {
-                Ok(()) => pruned += 1,
-                Err(e) => {
-                    return Err(format!("Failed to prune {anchor}: {e}").into());
-                }
+            prune_batch.push(anchor.as_str());
+            if prune_batch.len() == 256 {
+                storage.delete_nodes_bulk(&prune_batch)?;
+                pruned += prune_batch.len();
+                prune_batch.clear();
             }
+        }
+        if !prune_batch.is_empty() {
+            storage.delete_nodes_bulk(&prune_batch)?;
+            pruned += prune_batch.len();
         }
 
         // Connect the graph: persist module<->symbol containment and call edges
@@ -1480,5 +1520,47 @@ mod store_lock_tests {
             std::time::Duration::from_millis(100),
         )
         .expect("lock is free after release");
+    }
+}
+
+#[cfg(test)]
+mod coalesced_doc_tests {
+    use super::*;
+    fn doc(anchor: &str) -> aden_core::Document {
+        aden_core::Document {
+            anchor: anchor.into(),
+            node_type: aden_core::NodeType::Note,
+            attributes: Default::default(),
+            blocks: vec![],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        }
+    }
+    #[test]
+    fn collision_and_flush_across_chunk_boundaries() {
+        let path = std::env::temp_dir().join(format!("aden-coalesced-{}", std::process::id()));
+        let storage = Storage::new(&path).unwrap();
+        let mut batch = CoalescedDocBatch::default();
+        batch.push((doc("same"), "first".into()));
+        batch.push((doc("same"), "last".into()));
+        assert_eq!(batch.docs.len(), 1);
+        for i in 1..COALESCED_DOC_BATCH_LIMIT {
+            batch.push((doc(&format!("n{i}")), "base".into()));
+        }
+        batch.flush(&storage).unwrap();
+        assert!(batch.docs.is_empty() && batch.index.is_empty());
+        assert_eq!(
+            storage.get_base_snapshot("same").unwrap().as_deref(),
+            Some("last")
+        );
+        batch.push((doc("same"), "later chunk".into()));
+        batch.flush(&storage).unwrap();
+        assert_eq!(
+            storage.get_base_snapshot("same").unwrap().as_deref(),
+            Some("later chunk")
+        );
+        drop(storage);
+        std::fs::remove_dir_all(path).ok();
     }
 }

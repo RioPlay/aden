@@ -662,6 +662,70 @@ impl GraphStorage for FjallStorage {
         Ok(())
     }
 
+    fn delete_nodes_bulk(&self, anchors: &[&str]) -> Result<(), StoreError> {
+        for chunk in anchors.chunks(256) {
+            let chunk_set: HashSet<&str> = chunk.iter().copied().collect();
+            let mut incoming: HashMap<String, HashSet<(String, EdgeType)>> = HashMap::new();
+            let mut outgoing: HashMap<String, HashSet<(String, EdgeType)>> = HashMap::new();
+            let mut batch = self.db.batch();
+            for &anchor in &chunk_set {
+                let out: Vec<(String, EdgeType)> = match self.outgoing.get(outgoing_key(anchor))? {
+                    Some(b) => deserialize(&b)?,
+                    None => vec![],
+                };
+                let inc: Vec<(String, EdgeType)> = match self.incoming.get(incoming_key(anchor))? {
+                    Some(b) => deserialize(&b)?,
+                    None => vec![],
+                };
+                batch.remove(&self.docs, doc_key(anchor));
+                batch.remove(&self.source_spans, anchor);
+                batch.remove(&self.bases, base_key(anchor));
+                batch.remove(&self.index, symbol_record_key(anchor));
+                for key in symbol_index_entries(anchor)?.0 {
+                    batch.remove(&self.index, key);
+                }
+                batch.remove(&self.outgoing, outgoing_key(anchor));
+                batch.remove(&self.incoming, incoming_key(anchor));
+                for (dst, et) in out {
+                    batch.remove(&self.edges, edge_key(anchor, &dst, &et));
+                    if !chunk_set.contains(dst.as_str()) {
+                        incoming
+                            .entry(dst)
+                            .or_default()
+                            .insert((anchor.to_string(), et));
+                    }
+                }
+                for (src, et) in inc {
+                    batch.remove(&self.edges, edge_key(&src, anchor, &et));
+                    if !chunk_set.contains(src.as_str()) {
+                        outgoing
+                            .entry(src)
+                            .or_default()
+                            .insert((anchor.to_string(), et));
+                    }
+                }
+            }
+            for (node, removals) in incoming {
+                let key = incoming_key(&node);
+                if let Some(b) = self.incoming.get(&key)? {
+                    let mut list: Vec<(String, EdgeType)> = deserialize(&b)?;
+                    list.retain(|pair| !removals.contains(pair));
+                    batch.insert(&self.incoming, key, serialize(&list)?);
+                }
+            }
+            for (node, removals) in outgoing {
+                let key = outgoing_key(&node);
+                if let Some(b) = self.outgoing.get(&key)? {
+                    let mut list: Vec<(String, EdgeType)> = deserialize(&b)?;
+                    list.retain(|pair| !removals.contains(pair));
+                    batch.insert(&self.outgoing, key, serialize(&list)?);
+                }
+            }
+            batch.commit()?;
+        }
+        Ok(())
+    }
+
     fn get_edges_by_type(&self, edge_type: &EdgeType) -> Result<Vec<(String, String)>, StoreError> {
         let edge_str = format!("{:?}", edge_type);
         let prefix = format!("edge{KEY_SEP}");
