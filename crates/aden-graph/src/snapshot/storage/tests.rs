@@ -291,7 +291,7 @@ fn streamed_snapshot_remains_preferred_with_newer_live_store() {
 }
 
 #[test]
-fn stored_snapshot_matches_fjall_bulk_read_including_rehydrated_spans() {
+fn stored_snapshot_matches_store_bulk_read_including_rehydrated_spans() {
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("graph.snapshot");
     let storage = aden_store::Storage::new(dir.path().join("store").to_str().unwrap()).unwrap();

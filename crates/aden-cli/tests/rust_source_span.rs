@@ -51,6 +51,12 @@ fn rust_function_spans_survive_store_and_snapshot_without_trusting_stale_source(
     let storage =
         aden_store::Storage::open_existing(project_data.join("store").to_str().unwrap()).unwrap();
     let documents = storage.get_all_documents().unwrap();
+    let indexed_nodes = storage.get_nodes_in_file("source.rs").unwrap();
+    assert!(
+        indexed_nodes.iter().any(|a| a.ends_with("#target"))
+            && indexed_nodes.iter().any(|a| a.ends_with("#Sample::method")),
+        "expected nodes joined cleanly to relative files.rel_path row, got: {indexed_nodes:?}"
+    );
     drop(storage);
     let snapshot_bytes = std::fs::read(project_data.join("graph.snapshot")).unwrap();
     let (snapshot, _) = aden_graph::snapshot::decode_snapshot(&snapshot_bytes).unwrap();
@@ -71,10 +77,7 @@ fn rust_function_spans_survive_store_and_snapshot_without_trusting_stale_source(
             .source_span
             .as_ref()
             .expect("persisted Rust function source span");
-        assert_eq!(
-            std::path::Path::new(&span.file),
-            file.canonicalize().unwrap()
-        );
+        assert_eq!(span.file, "source.rs");
         assert_eq!((span.start_line, span.end_line), (first, last));
         assert_eq!(span.start_byte, source.find(text).unwrap());
         assert_eq!(span.end_byte, span.start_byte + text.len());

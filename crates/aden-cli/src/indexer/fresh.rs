@@ -400,7 +400,7 @@ impl From<Freshness> for ReceiptFreshness {
 }
 
 /// Rebuild the store from source IF (and only if) it exists on disk but is in a
-/// storage-engine format this build cannot read (e.g. after a fjall upgrade).
+/// storage-engine format this build cannot read (e.g. a legacy Fjall store or schema upgrade).
 ///
 /// Returns `true` when a rebuild was triggered. Unlike [`ensure_fresh`], this
 /// does NOT regenerate on mere mtime staleness — it fires solely on the

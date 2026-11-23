@@ -215,10 +215,10 @@ builds on. Several are load-bearing:
 
 *Storage, graph & data*
 
-- the **fjall** project (LSM-tree storage), **petgraph** (graph data
-  structures), and the **serde** community (**David Tolnay** and contributors) —
-  with `postcard`, `serde_json`, `serde_yaml`, `toml`, `blake3`, `fnv`, and
-  `uuid`.
+- **SQLite** (via `rusqlite`, WAL-mode graph storage) and `lz4_flex`
+  (blob compression), **petgraph** (graph data structures), and the **serde**
+  community (**David Tolnay** and contributors) — with `postcard`,
+  `serde_json`, `serde_yaml`, `toml`, `blake3`, `fnv`, and `uuid`.
 
 *CLI, async & protocol*
 

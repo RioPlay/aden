@@ -23,7 +23,7 @@ writer for minutes — it fail-opens so agents are not frozen. Escape hatch:
 Do not manually re-point the MCP server at a project path for normal multi-repo use.
 
 **Concurrent reads:** `gen` publishes `graph.snapshot` (ADR-011) so multiple readers
-load the snapshot instead of opening fjall. Writers single-flight on `store.lock`;
+load the snapshot instead of opening the live SQLite store. Writers single-flight on `store.lock`;
 `aden status` shows the active holder and snapshot path.
 
 > **Subagents:** MCP instructions are not inherited automatically — tell spawned agents

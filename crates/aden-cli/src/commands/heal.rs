@@ -164,7 +164,7 @@ pub fn cmd_heal_scan_since(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_heal::{Scanner, generate};
 
-    // A store left in an unreadable engine format (e.g. after a fjall upgrade)
+    // A store left in an unreadable engine format (e.g. a legacy Fjall store or incompatible schema version)
     // would make heal silently find nothing. Recover it first — but ONLY on the
     // format-mismatch signal, never on mere staleness, so a normal heal still
     // observes real drift between source and the current store.

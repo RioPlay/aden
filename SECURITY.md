@@ -2,14 +2,14 @@
 
 ## Supported Versions
 
-aden is pre-1.0. Security fixes are applied to the latest `0.3.x` release line
+aden is pre-1.0. Security fixes are applied to the latest `0.4.x` release line
 only; there is no backporting to older point releases.
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.3.x   | :white_check_mark: |
-| 0.2.x   | :x:                |
-| < 0.2   | :x:                |
+| 0.4.x   | :white_check_mark: |
+| 0.3.x   | :x:                |
+| < 0.3   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -67,10 +67,10 @@ the index. JSON envelopes include `freshness` / `index_stale` when results may l
 See [ADR-010](docs/adr-010-structural-remediation.adoc) and
 [ai-integration](docs/ai-integration.adoc).
 
-Concurrent readers load `graph.snapshot` (ADR-011) instead of opening fjall,
-reducing `FjallError: Locked`. Writers single-flight on `store.lock`. Path
-confinement still binds MCP tools to the active project root (Roots auto-detect
-or explicit pin).
+Concurrent readers load `graph.snapshot` (ADR-011) or read SQLite WAL
+concurrently without blocking writers, avoiding lock contention on the live
+store. Writers single-flight on `store.lock`. Path confinement still binds MCP
+tools to the active project root (Roots auto-detect or explicit pin).
 
 For the full threat table, the include-directive rules, and the secret-scanning
 layers, see [`docs/security-model.adoc`](docs/security-model.adoc).

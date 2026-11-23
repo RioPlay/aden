@@ -458,7 +458,7 @@ fn cmd_gen_inner(
             }
             Err(aden_store::StoreError::IncompatibleVersion(_)) => {
                 // The on-disk store was written in an engine format this build
-                // cannot read (e.g. a fjall major upgrade). The store is a
+                // cannot read (e.g. a legacy Fjall store or schema upgrade). The store is a
                 // rebuildable cache (ADR-003), so wipe it and rebuild from
                 // source. Scoped strictly to this signal — a generic Io error
                 // falls through to the hard-failure arm below and never wipes.
@@ -1383,8 +1383,8 @@ fn cmd_gen_inner(
         drop(cochange);
 
         // ADR-011: serialize the read snapshot to its temporary file while
-        // storage is open; publish after the store handle drops so a final fjall
-        // flush cannot age the store past the snapshot file.
+        // storage is open; publish after the store handle drops so a final store
+        // checkpoint/flush cannot age the store past the snapshot file.
         super::generation_job::checkpoint("snapshot_prepare", None, None)?;
         trace.stage("snapshot_prepare");
         let snapshot_path = aden_paths::graph_snapshot_file(&root);

@@ -132,7 +132,7 @@ fn existing_central_and_pinned_stores_take_precedence() {
         assert_eq!(observed["total"], 1);
         assert_eq!(observed["context_receipt"]["freshness"], "current");
         assert_eq!(observed["context_receipt"]["refresh_cause"], "none");
-        // The compatibility probe would materialize Fjall files if it opened
+        // The compatibility probe would materialize store files if it opened
         // either lower-priority empty directory.
         assert_eq!(std::fs::read_dir(&legacy).unwrap().count(), 0);
         if pinned {

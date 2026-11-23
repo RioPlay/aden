@@ -114,6 +114,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cargo build --locked -p aden-cli -p aden-mcp
           cargo build --locked -p aden-cli -p aden-mcp --message-format=json |
             python3 scripts/check_parser_build.py
           (cd crates/aden-cli/assets && sha256sum --check CHECKSUMS)

@@ -427,31 +427,43 @@ fn walk_supported_files_inner(
 /// always yields a repo-relative path. As defense-in-depth, if the value is
 /// still absolute afterwards, fall back to the bare file name so no absolute
 /// component can ever be stored.
+fn sanitize_relative_path(raw: &str, root: &Path) -> Option<String> {
+    let p = std::path::Path::new(raw);
+    // Strip the root prefix component-wise. We do NOT gate this on
+    // `p.is_absolute()`: a Unix-style path like `/home/...` is not
+    // "absolute" on Windows (no drive letter), but `strip_prefix` still
+    // works cross-platform, so a graph built on one OS is sanitized on
+    // another. The bare-filename fallback only applies to genuinely
+    // host-absolute paths, so relative paths that simply don't match the
+    // root are left untouched unless they carry Windows backslashes.
+    aden_paths::relative_to(root, p)
+        .or_else(|| p.strip_prefix(root).ok().map(|r| r.to_path_buf()))
+        .map(|r| r.to_string_lossy().replace('\\', "/"))
+        .or_else(|| {
+            if p.is_absolute() {
+                p.file_name().map(|f| f.to_string_lossy().into_owned())
+            } else if raw.contains('\\') {
+                Some(raw.replace('\\', "/"))
+            } else {
+                None
+            }
+        })
+}
+
 pub fn sanitize_source_file(doc: &mut aden_core::Document, root: &Path) {
-    if let Some(source_file) = doc.attributes.get("source_file") {
-        let p = std::path::Path::new(source_file);
-        // Strip the root prefix component-wise. We do NOT gate this on
-        // `p.is_absolute()`: a Unix-style path like `/home/...` is not
-        // "absolute" on Windows (no drive letter), but `strip_prefix` still
-        // works cross-platform, so a graph built on one OS is sanitized on
-        // another. The bare-filename fallback only applies to genuinely
-        // host-absolute paths, so relative paths that simply don't match the
-        // root are left untouched.
-        let rel = aden_paths::relative_to(root, p)
-            .or_else(|| p.strip_prefix(root).ok().map(|r| r.to_path_buf()))
-            .map(|r| r.to_string_lossy().replace('\\', "/"))
-            .or_else(|| {
-                if p.is_absolute() {
-                    p.file_name().map(|f| f.to_string_lossy().to_string())
-                } else {
-                    None
-                }
-            });
-        if let Some(rel) = rel {
-            // Persist with forward slashes so stores built on Windows match the
-            // `/`-normalized keys used by tree, grep, and impact-diff lookups.
-            doc.attributes.insert("source_file".to_string(), rel);
-        }
+    if let Some(rel) = doc
+        .attributes
+        .get("source_file")
+        .and_then(|source_file| sanitize_relative_path(source_file, root))
+    {
+        // Persist with forward slashes so stores built on Windows match the
+        // `/`-normalized keys used by tree, grep, and impact-diff lookups.
+        doc.attributes.insert("source_file".to_string(), rel);
+    }
+    if let Some(span) = doc.source_span.as_mut()
+        && let Some(rel) = sanitize_relative_path(&span.file, root)
+    {
+        span.file = rel;
     }
 }
 
@@ -1206,7 +1218,7 @@ fn resolve_doc_link(
 
 /// Collect store-backed contracts as `(synthetic_path, adoc_text)` entries.
 ///
-/// `aden gen --auto` writes symbol contracts to the fjall store (only module
+/// `aden gen --auto` writes symbol contracts to the graph store (only module
 /// contracts land on disk), so without this the full-text index — and therefore
 /// `search` and `ask` — would never see any code symbols on any project. We
 /// re-emit each stored `Document` to AsciiDoc and feed it to the index.
@@ -1222,7 +1234,7 @@ fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
         return Vec::new();
     };
 
-    // ADR-011: snapshot-first (via helper) so search/ask don't open fjall
+    // ADR-011: snapshot-first (via helper) so search/ask don't open the live store
     // while gen/heal/merge writers are active.
     if let Some((docs_map, _)) = aden_graph::snapshot::try_read_fresh(&root) {
         let mut docs: Vec<_> = docs_map.into_values().collect();
@@ -1295,7 +1307,7 @@ fn index_text(doc: &aden_core::Document) -> String {
 /// Load the search index from disk cache, or build and cache it.
 ///
 /// The index merges on-disk `.adoc`/`.aden`/`.txt` files with contracts kept in
-/// the fjall store, so language-agnostic `gen --auto` output (which is
+/// the graph store, so language-agnostic `gen --auto` output (which is
 /// store-first) is fully searchable.
 ///
 /// A resident read worker shares one decoded cache across requests (see
@@ -2713,7 +2725,13 @@ mod tests {
             node_type: aden_core::NodeType::Function,
             attributes: attrs,
             blocks: vec![],
-            source_span: None,
+            source_span: Some(aden_core::SourceSpan {
+                file: "/home/someone/projects/widget/src\\lib.rs".to_string(),
+                start_line: 1,
+                end_line: 3,
+                start_byte: 0,
+                end_byte: 12,
+            }),
             metadata: None,
             confidence: 1.0,
         };
@@ -2722,6 +2740,65 @@ mod tests {
             doc.attributes.get("source_file").map(|s| s.as_str()),
             Some("src/lib.rs"),
             "must strip against the given root, leaking no /home/ prefix"
+        );
+        assert_eq!(
+            doc.source_span.as_ref().map(|s| s.file.as_str()),
+            Some("src/lib.rs"),
+            "must sanitize source_span.file with forward slashes too"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("crates").join("mod").join("lib.rs");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::write(&nested, "fn f() {}\n").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.rs");
+        std::fs::write(&outside_file, "fn g() {}\n").unwrap();
+        let mixed = format!(
+            "{}/crates\\mod\\lib.rs",
+            dir.path().to_string_lossy().replace('\\', "/")
+        );
+        let mut win_doc = aden_core::Document {
+            anchor: "y".into(),
+            node_type: aden_core::NodeType::Function,
+            attributes: HashMap::new(),
+            blocks: vec![],
+            source_span: Some(aden_core::SourceSpan {
+                file: mixed,
+                start_line: 1,
+                end_line: 1,
+                start_byte: 0,
+                end_byte: 9,
+            }),
+            metadata: None,
+            confidence: 1.0,
+        };
+        sanitize_source_file(&mut win_doc, dir.path());
+        assert_eq!(
+            win_doc.source_span.as_ref().map(|s| s.file.as_str()),
+            Some("crates/mod/lib.rs")
+        );
+
+        let mut ext_doc = aden_core::Document {
+            anchor: "z".into(),
+            node_type: aden_core::NodeType::Function,
+            attributes: HashMap::new(),
+            blocks: vec![],
+            source_span: Some(aden_core::SourceSpan {
+                file: outside_file.to_string_lossy().into_owned(),
+                start_line: 1,
+                end_line: 1,
+                start_byte: 0,
+                end_byte: 9,
+            }),
+            metadata: None,
+            confidence: 1.0,
+        };
+        sanitize_source_file(&mut ext_doc, dir.path());
+        assert_eq!(
+            ext_doc.source_span.as_ref().map(|s| s.file.as_str()),
+            Some("secret.rs"),
+            "out-of-root host-absolute paths must degrade to bare filename"
         );
     }
 

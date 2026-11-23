@@ -1,8 +1,8 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Integration test (ADR-009): aden auto-recovers a store left in an unreadable
-//! storage-engine format. Corrupting fjall's on-disk `version` marker simulates
-//! a fjall V2 store opened by a fjall-3 binary (the post-#44 upgrade hazard).
+//! storage-engine format. Writing a legacy Fjall `version` marker simulates
+//! an unreadable pre-SQLite store format (e.g. a legacy FJL2 store or future schema).
 //!
 //! Runs the freshly-built binary (`CARGO_BIN_EXE_aden`) over a hermetic git
 //! fixture with an isolated `ADEN_DATA_DIR`, so the per-user store and caches
@@ -84,9 +84,9 @@ fn find_store(data: &Path) -> PathBuf {
     entries.remove(0).path().join("store")
 }
 
-/// Simulate an incompatible (e.g. fjall V2) store by overwriting the engine's
-/// on-disk version marker; fjall's `check_version` then rejects it as an
-/// unreadable format — the same signal a genuine V2 store produces.
+/// Simulate an incompatible (e.g. legacy Fjall V2) store by writing a `FJL\x02`
+/// version marker; `SqliteStorage` rejects it as an unreadable legacy format —
+/// triggering the same `IncompatibleVersion` recovery path.
 fn corrupt_store_version(store: &Path) {
     std::fs::write(store.join("version"), b"FJL\x02").unwrap();
 }

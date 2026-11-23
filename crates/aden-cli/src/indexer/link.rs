@@ -790,7 +790,7 @@ fn is_plain_ident(s: &str) -> bool {
 /// of that method ON THE CALLER'S OWN ENCLOSING TYPE, preserving the language's
 /// member separator so it matches how the type's methods are stored:
 /// `…#Command.main` + `invoke` → `Command.invoke` (Python `.`),
-/// `…#FjallStorage::open` + `flush` → `FjallStorage::flush` (Rust `::`).
+/// `…#SqliteStorage::open` + `flush` → `SqliteStorage::flush` (Rust `::`).
 /// Returns `None` when the caller symbol is not itself a method (a free function
 /// has no enclosing type, so `self` could not appear anyway).
 fn enclosing_qualified(caller: &str, method: &str) -> Option<String> {
@@ -1561,8 +1561,8 @@ mod link_tests {
         );
         // Rust path-methods.
         assert_eq!(
-            enclosing_qualified("aden://module/c/s.rs#FjallStorage::open", "flush"),
-            Some("FjallStorage::flush".to_string())
+            enclosing_qualified("aden://module/c/s.rs#SqliteStorage::open", "flush"),
+            Some("SqliteStorage::flush".to_string())
         );
         // A free function has no enclosing type → None (self can't appear).
         assert_eq!(

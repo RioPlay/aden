@@ -683,6 +683,109 @@ pub(crate) fn code_only(line: &str) -> String {
     out
 }
 
+const RUST_COPY_TYPES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
+    "f64", "bool", "char",
+];
+
+fn is_rust_copy_type(token: &str) -> bool {
+    RUST_COPY_TYPES.contains(&token.trim())
+}
+
+/// Detect unambiguous unnecessary `.clone()` calls on bare Copy primitives:
+/// - `let <pat>: <CopyType> = <expr>.clone();`
+/// - `<expr>.clone() as <CopyType>`
+/// - `(<expr> as <CopyType>).clone()`
+///
+/// Avoids false positives on multi-argument calls where a sibling argument
+/// happens to cast to a Copy type (e.g. `counts.insert(k.clone(), v as usize)`).
+fn has_unnecessary_copy_clone(code: &str) -> bool {
+    if !code.contains(".clone()") {
+        return false;
+    }
+
+    // 1. Typed `let` binding with bare Copy type and trailing `.clone()`.
+    let trimmed = code.trim_start();
+    if trimmed.starts_with("let ")
+        && let Some((lhs, rhs)) = trimmed.split_once('=')
+        && rhs
+            .trim()
+            .trim_end_matches(';')
+            .trim_end()
+            .ends_with(".clone()")
+        && let Some((_, ty)) = lhs.rsplit_once(':')
+        && is_rust_copy_type(ty)
+    {
+        return true;
+    }
+
+    // 2. `.clone() as <CopyType>` or `(<expr> as <CopyType>).clone()`.
+    let needle = ".clone()";
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut from = 0;
+    while let Some(rel) = code[from..].find(needle) {
+        let idx = from + rel;
+        let after = code[idx + needle.len()..].trim_start();
+        if let Some(after_as) = after.strip_prefix("as")
+            && after_as.starts_with(char::is_whitespace)
+        {
+            let ty_token = after_as
+                .trim_start()
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or("");
+            if is_rust_copy_type(ty_token) {
+                return true;
+            }
+        }
+
+        let before = code[..idx].trim_end();
+        if before.ends_with(')') {
+            let bytes = before.as_bytes();
+            let mut depth = 0usize;
+            let mut open_idx = None;
+            for (pos, &b) in bytes.iter().enumerate().rev() {
+                match b {
+                    b')' => depth += 1,
+                    b'(' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            open_idx = Some(pos);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(open) = open_idx {
+                let prefix_ok = open == 0
+                    || !is_ident(
+                        before[..open]
+                            .trim_end()
+                            .as_bytes()
+                            .last()
+                            .copied()
+                            .unwrap_or(0),
+                    );
+                if prefix_ok {
+                    let inner = &before[open + 1..before.len() - 1];
+                    if let Some((expr, ty)) = inner.rsplit_once("as")
+                        && expr.ends_with(char::is_whitespace)
+                        && ty.starts_with(char::is_whitespace)
+                        && is_rust_copy_type(ty)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        from = idx + needle.len();
+    }
+
+    false
+}
+
 fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
     let mut results = Vec::new();
     // Code with string/comment text blanked out, for patterns that must only
@@ -727,22 +830,9 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    // NEW: Unnecessary clone on Copy types. Match only against real code, and
-    // require the Copy type name to appear as a whole word (so `parse_i32` /
-    // `bool_flag` / a mention in a comment don't trigger it).
-    let copy_type = |ty: &str| word_in(&code, ty);
-    if code.contains(".clone()")
-        && (copy_type("i32")
-            || copy_type("u32")
-            || copy_type("i64")
-            || copy_type("u64")
-            || copy_type("usize")
-            || copy_type("isize")
-            || copy_type("bool")
-            || copy_type("char")
-            || copy_type("f32")
-            || copy_type("f64"))
-    {
+    // NEW: Unnecessary clone on Copy types. Match only typed Copy bindings or
+    // explicit Copy casts on the cloned expression itself.
+    if has_unnecessary_copy_clone(&code) {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -1529,13 +1619,36 @@ mod tests {
     // ---------- Rust: unnecessary_clone ----------
     #[test]
     fn unnecessary_clone_true_and_false_positives() {
-        // true positive: clone on a whole-word Copy type
+        // true positive: clone on a bare Copy binding or Copy cast
         assert!(has(
             &rust_rules("let x: i32 = y.clone();"),
             "unnecessary_clone"
         ));
         assert!(has(
             &rust_rules("let b: bool = flag.clone();"),
+            "unnecessary_clone"
+        ));
+        assert!(has(
+            &rust_rules("let n = x.clone() as usize;"),
+            "unnecessary_clone"
+        ));
+        assert!(has(
+            &rust_rules("let n = (count as usize).clone();"),
+            "unnecessary_clone"
+        ));
+        // false positive: Copy cast in a different call argument than `.clone()`
+        assert!(!has(
+            &rust_rules("counts.insert(target.clone(), count as usize);"),
+            "unnecessary_clone"
+        ));
+        // false positive: generic container holding Copy type
+        assert!(!has(
+            &rust_rules("let v: Vec<u32> = other.clone();"),
+            "unnecessary_clone"
+        ));
+        // false positive: Copy binding reading non-Copy key clone
+        assert!(!has(
+            &rust_rules("let x: usize = map.get(&key.clone()).copied().unwrap_or(0);"),
             "unnecessary_clone"
         ));
         // false positive: `i32` only as a substring of an identifier

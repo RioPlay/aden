@@ -3,7 +3,7 @@
 //! Disk cache for the Aden knowledge graph.
 //!
 //! Full-graph reads prefer the lock-free ADR-011 snapshot. Selective anchor and
-//! neighborhood reads use fjall's keyed documents/adjacency lists first so a
+//! neighborhood reads query SQLite's indexed tables/adjacency lists first so a
 //! small question does not deserialize an entire repository; they fall back to
 //! the snapshot when a concurrent writer makes the store unavailable.
 
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) mod symbols;
 
-/// Try loading the graph for read commands (ADR-011 snapshot-first, fjall fallback).
+/// Try loading the graph for read commands (ADR-011 snapshot-first, SQLite store fallback).
 pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
     let (store_path, is_legacy) = aden_paths::resolve_read_store(path);
     if is_legacy {
