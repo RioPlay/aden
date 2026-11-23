@@ -7,7 +7,7 @@
 // This is the first step that makes the dictionary graph permanent and queryable
 // instead of a dry-run JSON. It reads the full OEWN flat triples
 // (`scripts/oewn_to_triples.py --all` → 172k edges) and writes them as typed edges
-// (`SynonymOf`/`IsA`/`PartOf`) into a fjall store at a dedicated lexicon path. Lemmas
+// (`SynonymOf`/`IsA`/`PartOf`) into an aden-store database at a dedicated lexicon path. Lemmas
 // are anchored under the `aden://term/oewn/<lemma>` scheme so they never collide with a
 // project's code anchors.
 //

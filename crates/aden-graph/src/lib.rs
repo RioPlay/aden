@@ -15,7 +15,7 @@
 //!     ->
 //! AdenGraph<N, E> (generic graph engine)
 //!     -> persist
-//! aden-store (Sled + Postcard, or RocksDB/TiKV later)
+//! aden-store (SQLite WAL + LZ4/Postcard)
 //! ```
 //!
 //! ## Key modules
@@ -24,7 +24,7 @@
 //! - `nodes::aden` — `DocumentNode` and `AdenEdge` (aden-specific impl)
 //! - `graph` — `AdenGraph<N, E>` generic graph engine
 //! - `parser` — `.adoc` → `DocumentNode`
-//! - `cache` — persistence layer (Sled/Postcard + JSON fallback)
+//! - `cache` — persistence layer (SQLite store + ADR-011 snapshot)
 //! - `bridge` — sync between in-memory graph and storage
 
 pub mod backlinks;

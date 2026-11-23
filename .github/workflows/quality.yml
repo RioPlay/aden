@@ -12,13 +12,13 @@ permissions:
 
 concurrency:
   group: manual-quality-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
     name: Deep quality gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - name: Checkout requested commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,17 +45,18 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check every target and feature at MSRV
-        run: cargo check --locked --workspace --all-targets --all-features
+      - name: Check and lint every target and feature at MSRV
+        run: |
+          cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+          cargo clippy --locked -p aden-lsp --all-targets -- -D warnings
 
       - name: Setup current stable for opt-in features
+        if: github.event_name != 'pull_request'
         run: rustup toolchain install stable --profile minimal
 
       - name: Check every opt-in feature
+        if: github.event_name != 'pull_request'
         run: cargo +stable check --locked --workspace --exclude aden-lsp --all-features
-
-      - name: Lint workspace
-        run: cargo clippy --locked --workspace -- -D warnings
 
       - name: Verify offline harnesses
         run: |
@@ -67,7 +68,24 @@ jobs:
           node --version
           node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs
 
+      - name: Detect editor extension changes
+        id: vscode_changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_ref="${{ github.base_ref }}"
+          if ! git rev-parse --verify "origin/${base_ref}" >/dev/null 2>&1; then
+            git fetch --no-tags --depth=1 origin "${base_ref}:refs/remotes/origin/${base_ref}"
+          fi
+          if [[ -n "$(git diff --name-only "origin/${base_ref}...HEAD" -- editors/vscode/)" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check editor dependencies and compilation
+        if: github.event_name != 'pull_request' || steps.vscode_changes.outputs.changed == 'true'
         working-directory: editors/vscode
         run: |
           npm ci --ignore-scripts
@@ -84,17 +102,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          forbidden="ureq ureq-proto rustls ring tar zstd"
+          forbidden="ureq ureq-proto rustls ring tar zstd fjall lsm-tree"
           tree="$(cargo tree --locked -p aden-cli --edges normal --prefix none | awk '{print $1}' | sort -u)"
           for dependency in $forbidden; do
             if grep -ixq "$dependency" <<< "$tree"; then
-              echo "Default dependency tree contains opt-in dependency: $dependency" >&2
+              echo "Default dependency tree contains forbidden dependency: $dependency" >&2
               exit 1
             fi
           done
 
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --version 0.19.8 --locked
+      - name: Install prebuilt cargo-deny
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          curl -fsSL \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.8/cargo-deny-0.19.8-x86_64-unknown-linux-musl.tar.gz" \
+            -o "$tmp/cargo-deny.tar.gz"
+          echo "70e769ae3872e34d45132b17040859175e11401dc12dddb0303e0b8c7d088f3f  $tmp/cargo-deny.tar.gz" | sha256sum -c -
+          tar -xzf "$tmp/cargo-deny.tar.gz" -C "$tmp" --strip-components=1
+          install -Dm755 "$tmp/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
+          cargo-deny --version
 
       - name: Audit dependencies and vendored assets
         run: |

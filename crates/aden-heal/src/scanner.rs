@@ -347,6 +347,13 @@ impl Scanner {
         Ok(events)
     }
 
+    fn relative_path(&self, path: &Path) -> Option<PathBuf> {
+        path.strip_prefix(&self.repo_root)
+            .ok()
+            .map(Path::to_path_buf)
+            .or_else(|| aden_paths::relative_to(&self.repo_root, path))
+    }
+
     fn is_excluded_dir(&self, path: &Path) -> bool {
         // Always skip hard-coded build/vcs dirs regardless of .adenignore
         if path
@@ -357,9 +364,18 @@ impl Scanner {
         {
             return true;
         }
-        // Also honour .adenignore so agent dirs, tool configs, etc. are skipped
-        if let Ok(rel) = path.strip_prefix(&self.repo_root) {
-            return self.filter.should_skip(rel);
+        // Also honour .adenignore (and nested repo markers / secret dirs) so agent
+        // dirs, tool configs, submodules, and credential trees are skipped.
+        if let Some(rel) = self.relative_path(path) {
+            return !self.filter.should_descend(&rel, Some(path))
+                || aden_core::filter::is_secret_path(&rel);
+        }
+        false
+    }
+
+    fn is_excluded_file(&self, path: &Path) -> bool {
+        if let Some(rel) = self.relative_path(path) {
+            return self.filter.should_skip(&rel) || aden_core::filter::is_secret_path(&rel);
         }
         false
     }
@@ -545,6 +561,9 @@ impl Scanner {
                     self.collect_doc_files(&path, files)?;
                 }
             } else if path.is_file() {
+                if self.is_excluded_file(&path) {
+                    continue;
+                }
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if matches!(ext, "md" | "adoc" | "rst" | "markdown") {
                     files.push(path);
@@ -567,6 +586,9 @@ impl Scanner {
                     self.collect_source_files(&path, files)?;
                 }
             } else if path.is_file() {
+                if self.is_excluded_file(&path) {
+                    continue;
+                }
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 // All languages supported by aden-parse — language-agnostic drift tracking
                 if matches!(
@@ -1191,6 +1213,78 @@ Hello world.
         assert!(
             !TRACKED_MARKDOWN_FILES.contains(&"CHANGELOG.md"),
             "CHANGELOG.md should not be in TRACKED_MARKDOWN_FILES"
+        );
+    }
+
+    #[test]
+    fn scanner_honors_file_level_adenignore_and_secret_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join(".adenignore"),
+            "*.min.js\nscripts/bench.py\ndocs-ignored.md\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            root.join("assets/bundle.min.js"),
+            "export function Gt() {}\nexport function Ht() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scripts/bench.py"),
+            "def run_bench():\n    pass\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn real_fn(a: i32) -> i32 { a }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("docs-ignored.md"),
+            "# Ignored\n\n```rust\nfn real_fn() {}\n```\n",
+        )
+        .unwrap();
+
+        let scanner = Scanner::new(root);
+        let mut source_files = Vec::new();
+        scanner
+            .collect_source_files(root, &mut source_files)
+            .unwrap();
+        let source_names: Vec<_> = source_files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(source_names.contains(&"lib.rs".to_string()));
+        assert!(!source_names.contains(&"bundle.min.js".to_string()));
+        assert!(!source_names.contains(&"bench.py".to_string()));
+        assert!(!source_names.contains(&"docs-ignored.md".to_string()));
+
+        let mut doc_files = Vec::new();
+        scanner.collect_doc_files(root, &mut doc_files).unwrap();
+        assert!(
+            doc_files
+                .iter()
+                .all(|p| p.file_name().and_then(|n| n.to_str()) != Some("docs-ignored.md")),
+            "ignored doc file must not be collected: {doc_files:?}"
+        );
+
+        let events = scanner.scan().unwrap();
+        assert!(
+            events.iter().all(|e| match e {
+                DriftEvent::MissingContract { source_path, .. } => {
+                    !source_path.contains("bundle.min.js") && !source_path.contains("bench.py")
+                }
+                DriftEvent::DocSignatureDivergence { doc_path, .. } => {
+                    !doc_path.contains("docs-ignored.md")
+                }
+                _ => true,
+            }),
+            "ignored files must produce no drift events: {events:?}"
         );
     }
 }

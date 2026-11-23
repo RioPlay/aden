@@ -1367,10 +1367,18 @@ enum StoreAction {
     },
     /// List all per-user project stores and their real roots
     List,
-    /// Remove stores whose project root no longer exists on disk
+    /// Remove orphaned project stores, unreadable legacy Fjall stores, and empty shells
     Prune {
         #[arg(long, help = "Show what would be removed without deleting")]
         dry_run: bool,
+        #[arg(long, help = "Only prune stores whose project root no longer exists")]
+        orphans_only: bool,
+        #[arg(
+            long,
+            value_name = "DAYS",
+            help = "Also evict dormant SQLite stores untouched for at least DAYS"
+        )]
+        stale_days: Option<u64>,
     },
     /// Move a legacy in-tree store (.aden/store) to the central location
     Migrate {
@@ -1587,7 +1595,7 @@ fn build_long_version() -> &'static str {
             aden_graph::snapshot::SNAPSHOT_VERSION,
             indexer::fresh::INDEX_LAYOUT_VERSION,
             types::GEN_LOGIC_VERSION,
-            aden_store::fjall_store::SYMBOL_LEXICON_VERSION
+            aden_store::SYMBOL_LEXICON_VERSION
         )
         .into_boxed_str(),
     )
@@ -2408,7 +2416,11 @@ fn execute_cli(
             }
             StoreAction::Path { path } => commands::cmd_store_path(&path),
             StoreAction::List => commands::cmd_store_list(),
-            StoreAction::Prune { dry_run } => commands::cmd_store_prune(dry_run),
+            StoreAction::Prune {
+                dry_run,
+                orphans_only,
+                stale_days,
+            } => commands::cmd_store_prune(dry_run, orphans_only, stale_days, machine_json),
             StoreAction::Migrate { path } => commands::cmd_store_migrate(&path),
         },
         Commands::Emergency { reason, ttl, path } => commands::cmd_emergency(&path, &reason, &ttl),

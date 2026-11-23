@@ -132,10 +132,12 @@ fn query_store_and_writer_contended_snapshot_return_same_neighborhoods() {
     .map(|(mode, seed)| (mode, seed, fixture.query(mode, seed, 100)))
     .collect();
     let store_path = fixture.store();
-    let storage = aden_store::Storage::open_existing(store_path.to_str().unwrap()).unwrap();
+    let lock_path = aden_core::lock::store_lock_path(&store_path);
+    let writer_lock =
+        aden_core::lock::FileLock::acquire_timeout(&lock_path, std::time::Duration::ZERO).unwrap();
     assert!(
-        aden_store::Storage::open_existing(store_path.to_str().unwrap()).is_err(),
-        "fixture must make the keyed store unavailable to another process"
+        aden_core::lock::FileLock::acquire_timeout(&lock_path, std::time::Duration::ZERO).is_err(),
+        "fixture must hold an active writer lock across processes"
     );
     for (mode, seed, expected) in expected {
         let fallback = fixture.query(mode, seed, 100);
@@ -143,7 +145,7 @@ fn query_store_and_writer_contended_snapshot_return_same_neighborhoods() {
         assert_eq!(fallback["truncated"], false);
         assert_eq!(fallback["items"].as_array().unwrap().len(), 3);
     }
-    drop(storage);
+    drop(writer_lock);
     assert_eq!(fixture.query("--impact", "entry", 100)["truncated"], false);
 }
 
@@ -267,10 +269,14 @@ fn query_and_asm_agree_with_and_without_snapshot_and_under_writer_contention() {
     assert!(expected.1["documents"].as_array().unwrap().len() >= 3);
 
     std::fs::remove_file(&snapshot).unwrap();
-    assert_eq!(read(), expected, "Fjall fallback");
+    assert_eq!(read(), expected, "SQLite store fallback");
     std::fs::write(&snapshot, bytes).unwrap();
 
-    let _writer = aden_store::Storage::open_existing(store_path.to_str().unwrap()).unwrap();
+    let lock_path = aden_core::lock::store_lock_path(&store_path);
+    let _writer_lock =
+        aden_core::lock::FileLock::acquire_timeout(&lock_path, std::time::Duration::ZERO).unwrap();
+    let _concurrent_reader =
+        aden_store::Storage::open_existing(store_path.to_str().unwrap()).unwrap();
     assert_eq!(read(), expected, "writer-contended snapshot");
 }
 
@@ -291,9 +297,20 @@ fn query_and_asm_reject_a_decodable_snapshot_with_the_wrong_revision() {
     assert_eq!(fixture.query("--from", "entry", 100), expected_query);
     assert_eq!(fixture.assembly("entry"), expected_asm);
 
-    // A rejected snapshot must not be retried unchecked when Fjall is locked.
-    // Use an anchor still in the altered snapshot so an unchecked read would succeed.
-    let _writer = aden_store::Storage::open_existing(store_path.to_str().unwrap()).unwrap();
+    // Under SQLite WAL, an open store handle allows concurrent readers to reject
+    // a stale/tampered snapshot and fall back cleanly to the authoritative store
+    // when no writer holds `store.lock`.
+    let _reader = aden_store::Storage::open_existing(store_path.to_str().unwrap()).unwrap();
+    assert_eq!(fixture.query("--from", "entry", 100), expected_query);
+    assert_eq!(fixture.assembly("entry"), expected_asm);
+    drop(_reader);
+
+    // A rejected wrong-revision snapshot must fail closed while an active
+    // writer holds `store.lock`, rather than reading mid-gen SQLite or
+    // falling back to unchecked snapshot bytes.
+    let lock_path = aden_core::lock::store_lock_path(&store_path);
+    let _writer_lock =
+        aden_core::lock::FileLock::acquire_timeout(&lock_path, std::time::Duration::ZERO).unwrap();
     assert!(
         !fixture
             .run(&Fixture::assembly_args("leaf"))

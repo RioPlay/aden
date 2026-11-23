@@ -432,13 +432,13 @@ absolute paths from older installs.
 After each successful `gen`, aden publishes `graph.snapshot` beside the per-user store.
 Read commands prefer that snapshot (even if the live store is briefly newer under a
 concurrent writer), then fold in-tree overlays in memory. Explicit `gen`/`ready`/`sync`
-still open fjall under `store.lock` (single-flight; second explicit writer waits).
+still open the live SQLite store under `store.lock` (single-flight; second explicit writer waits).
 
 | Situation | What happens |
 |-----------|--------------|
-| N concurrent read tools, no writer | Each loads `graph.snapshot` — no fjall open |
+| N concurrent read tools, no writer | Each loads `graph.snapshot` — no SQLite store open |
 | `gen` running while reads are active | Reads use the last published snapshot |
-| Snapshot missing | Fall back to opening fjall |
+| Snapshot missing | Fall back to reading the SQLite store |
 | Silent gen while lock held | Fail-open (no multi-minute queue) |
 
 `aden status` (and `--json`) reports the active store writer and read-snapshot path.

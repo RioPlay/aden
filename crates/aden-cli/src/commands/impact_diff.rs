@@ -184,7 +184,7 @@ fn run_scope_gate(
 
 /// Spans carried by the graph that `cmd_impact_diff` already loaded.
 ///
-/// Anchor order matches the fjall source-span projection, so two equal-sized
+/// Anchor order matches the store source-span projection, so two equal-sized
 /// overlapping spans still pick the same enclosing symbol.
 fn spans_from_graph(
     root: &Path,

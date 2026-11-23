@@ -194,8 +194,8 @@ fn incompatible_markers_keep_engine_classification_and_recovery() {
         "store_incompatible"
     );
     assert_eq!(
-        std::fs::read(project.join("store/version")).unwrap()[..4],
-        *b"FJL\x03"
+        std::fs::read(project.join("store/version")).unwrap()[..5],
+        *b"ADNS\x01"
     );
 }
 

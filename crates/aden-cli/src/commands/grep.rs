@@ -472,7 +472,7 @@ fn normalized_search_scope(path: &Path, root: &Path) -> std::io::Result<PathBuf>
 
 /// Load `source_file -> [span]` so each match can be attributed to its
 /// enclosing symbol. A revision-checked `graph.snapshot` wins when the read
-/// store is not pinned or legacy. Otherwise this streams the fjall projection
+/// store is not pinned or legacy. Otherwise this streams the store's source-span projection
 /// and, if a writer holds that store, ADR-011's snapshot.
 pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     load_symbol_spans_for(root, None)

@@ -3,8 +3,8 @@
 //! Read snapshot for concurrent graph loads (ADR-011).
 //!
 //! `gen` publishes an atomic `graph.snapshot` after linking edges. Read commands
-//! load from the snapshot when it is fresher than the live fjall store, avoiding
-//! fjall's process-level `Locked` errors under multi-agent workloads.
+//! load from the snapshot when it is fresher than the live SQLite store,
+//! avoiding write-lock contention under multi-agent workloads.
 
 use aden_core::{Document, EdgeType};
 use aden_store::{GraphStorage, StoreError};
@@ -134,8 +134,8 @@ fn decode_snapshot_reader<R: Read + Seek>(
 
 /// True when `snapshot` exists and is at least as new as every file under `store`.
 ///
-/// If `gen` updated fjall but crashed before publishing, the store tree is newer
-/// than the snapshot and readers must fall back to fjall.
+/// If `gen` updated the store but crashed before publishing, the store tree is newer
+/// than the snapshot and readers must fall back to the live SQLite store.
 pub fn snapshot_covers_store(snapshot: &Path, store: &Path) -> bool {
     let Ok(snap_meta) = snapshot.metadata() else {
         return false;
@@ -150,6 +150,24 @@ pub fn snapshot_covers_store(snapshot: &Path, store: &Path) -> bool {
 }
 
 fn newest_mtime_under(dir: &Path) -> Option<SystemTime> {
+    let sqlite_db = dir.join("graph.sqlite");
+    if sqlite_db.is_file() {
+        // Ignore directory metadata, -shm, and empty -wal files so concurrent
+        // SQLite WAL reads never advance the apparent store mtime past snapshot.
+        let mut newest = sqlite_db.metadata().ok()?.modified().ok()?;
+        for extra in ["version", "graph.sqlite-wal"] {
+            let path = dir.join(extra);
+            if let Ok(meta) = path.metadata()
+                && (extra != "graph.sqlite-wal" || meta.len() > 0)
+                && let Ok(modified) = meta.modified()
+                && modified > newest
+            {
+                newest = modified;
+            }
+        }
+        return Some(newest);
+    }
+
     let meta = dir.metadata().ok()?;
     let mut newest = meta.modified().ok()?;
     if meta.is_dir() {
@@ -225,7 +243,7 @@ fn write_payload_to_temp(
 /// Serialize a snapshot into `dest.tmp` without retaining its encoded bytes.
 ///
 /// Call [`publish_prepared`] after the storage handle is dropped so a final
-/// fjall flush cannot make the on-disk store newer than the snapshot file.
+/// WAL checkpoint/flush cannot make the on-disk store newer than the snapshot file.
 pub fn prepare_from_storage<S: GraphStorage>(
     dest: &Path,
     storage: &S,
@@ -251,9 +269,9 @@ pub fn prepare_from_storage_with_orphans<S: GraphStorage>(
 /// Atomically rename a successfully prepared snapshot into place.
 pub fn publish_prepared(dest: &Path) -> Result<(), SnapshotError> {
     let tmp = temporary_path(dest);
-    // Preparing happens while Fjall is still open; refresh the temporary file's
+    // Preparing happens while the live store is still open; refresh the temporary file's
     // mtime after that handle has dropped so the renamed snapshot covers its
-    // final flush.
+    // final WAL checkpoint/flush.
     std::fs::OpenOptions::new()
         .write(true)
         .open(&tmp)?
@@ -323,8 +341,8 @@ pub(crate) fn read_small_verified(
 ///
 /// **Zero-friction policy (ADR-011 amend):** prefer a non-empty snapshot even
 /// when the live store is newer (interrupted gen / concurrent writer). Serving
-/// the last consistent snapshot avoids fjall `Locked` under multi-agent load.
-/// Callers that need store-exact data open fjall after this returns `None`.
+/// the last consistent snapshot avoids contention on the live store under multi-agent load.
+/// Callers that need store-exact data open the SQLite store after this returns `None`.
 ///
 /// Returns `None` when the snapshot is missing or empty.
 pub fn try_read_fresh(root: &Path) -> Option<SnapshotData> {

@@ -3,14 +3,17 @@
 //! `aden store` — manage the per-user, per-project graph stores introduced by
 //! ADR-003. The graph store no longer lives in the project tree; it lives under
 //! the per-user data dir keyed by project. These subcommands surface where a
-//! store is, enumerate every project's store, reclaim orphans, and migrate
-//! legacy in-tree stores.
+//! store is, enumerate every project's store, reclaim orphans and legacy engines,
+//! and migrate legacy in-tree stores.
 
 use crate::util::find_project_root;
 use std::path::Path;
 
 #[path = "store_clean.rs"]
 mod clean;
+#[path = "store_housekeeping.rs"]
+pub mod housekeeping;
+
 pub use clean::cmd_store_clean;
 
 /// `aden store path` — print the resolved store directory for `path`'s project.
@@ -27,85 +30,109 @@ pub fn cmd_store_list() -> Result<(), Box<dyn std::error::Error>> {
         println!("No stores yet ({} does not exist).", projects.display());
         return Ok(());
     }
-    let mut found = false;
-    for entry in std::fs::read_dir(&projects)? {
-        let entry = entry?;
-        let dir = entry.path();
+    let mut count = 0usize;
+    let mut total_bytes = 0u64;
+    let mut entries: Vec<_> = std::fs::read_dir(&projects)?
+        .filter_map(|e| e.ok().map(|entry| entry.path()))
+        .collect();
+    entries.sort();
+
+    for dir in entries {
         if !dir.is_dir() {
             continue;
         }
-        found = true;
-        let key = entry.file_name().to_string_lossy().to_string();
+        count += 1;
+        let key = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let format = housekeeping::store_format_label(&dir);
+        let size = dir_size(&dir);
+        total_bytes = total_bytes.saturating_add(size);
         match aden_paths::read_meta(&dir) {
             Some(meta) => {
                 let orphaned = !Path::new(&meta.root).exists();
-                let size = dir_size(&dir);
                 println!(
-                    "{key}  {}{}  ({})",
+                    "{key}  [{format}]{}  {}  ({})",
+                    if orphaned { " [orphaned]" } else { "" },
                     meta.root,
-                    if orphaned { "  [orphaned]" } else { "" },
                     human_size(size),
                 );
             }
-            None => println!("{key}  <no meta.json>  ({})", human_size(dir_size(&dir))),
+            None => println!("{key}  [{format}]  <no meta.json>  ({})", human_size(size)),
         }
     }
-    if !found {
+    if count == 0 {
         println!("No stores yet.");
+    } else {
+        println!("Total: {count} store(s), {}", human_size(total_bytes));
     }
     Ok(())
 }
 
-/// `aden store prune` — remove project stores whose recorded root is gone.
-pub fn cmd_store_prune(dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+/// `aden store prune` — remove orphaned project stores, unreadable legacy
+/// Fjall stores, empty shells, and (when `--stale-days` is set) dormant stores.
+pub fn cmd_store_prune(
+    dry_run: bool,
+    orphans_only: bool,
+    stale_days: Option<u64>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let projects = aden_paths::data_root().join("projects");
+    let policy = housekeeping::PrunePolicy::explicit(dry_run, orphans_only, stale_days);
+    let report = housekeeping::prune_projects_dir(&projects, None, &policy)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "dry_run": report.dry_run,
+                "reclaimed_bytes": report.reclaimed_bytes,
+                "skipped_locked": report.skipped_locked,
+                "skipped_errors": report.skipped_errors,
+                "entries": report.entries,
+            })
+        );
+        return Ok(());
+    }
+
     if !projects.is_dir() {
         println!("Nothing to prune ({} does not exist).", projects.display());
         return Ok(());
     }
-    let mut reclaimed = 0u64;
-    for entry in std::fs::read_dir(&projects)? {
-        let entry = entry?;
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        // Only prune entries we can positively identify as orphaned: a readable
-        // meta.json whose recorded root no longer exists. Entries without meta
-        // are left alone (we can't prove they're orphaned).
-        let Some(meta) = aden_paths::read_meta(&dir) else {
-            continue;
-        };
-        if Path::new(&meta.root).exists() {
-            continue;
-        }
-        let size = dir_size(&dir);
-        reclaimed += size;
-        if dry_run {
-            println!(
-                "would remove {} ({}) -> {}",
-                dir.display(),
-                human_size(size),
-                meta.root
-            );
-        } else {
-            std::fs::remove_dir_all(&dir)?;
-            println!(
-                "removed {} ({}) -> {}",
-                dir.display(),
-                human_size(size),
-                meta.root
-            );
-        }
+
+    for entry in &report.entries {
+        let verb = if dry_run { "would prune" } else { "pruned" };
+        let target_label = entry.root.as_deref().unwrap_or("<no meta.json>");
+        println!(
+            "{verb} {} [{}] [{}] ({}) -> {}",
+            entry.path.display(),
+            entry.reason,
+            entry.action,
+            human_size(entry.bytes),
+            target_label,
+        );
     }
     println!(
-        "{} {}",
+        "{} {} across {} store(s){}{}.",
         if dry_run {
             "would reclaim"
         } else {
             "reclaimed"
         },
-        human_size(reclaimed)
+        human_size(report.reclaimed_bytes),
+        report.entries.len(),
+        if report.skipped_locked > 0 {
+            format!("; skipped {} locked", report.skipped_locked)
+        } else {
+            String::new()
+        },
+        if report.skipped_errors > 0 {
+            format!("; skipped {} error(s)", report.skipped_errors)
+        } else {
+            String::new()
+        },
     );
     Ok(())
 }
@@ -131,37 +158,12 @@ pub fn cmd_store_migrate(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Best-effort recursive byte size of a directory tree.
+/// Best-effort recursive byte size of a directory tree without following symlinks/junctions.
 fn dir_size(dir: &Path) -> u64 {
-    let mut total = 0;
-    if let Ok(read) = std::fs::read_dir(dir) {
-        for entry in read.flatten() {
-            match entry.file_type() {
-                Ok(ft) if ft.is_dir() => total += dir_size(&entry.path()),
-                Ok(ft) if ft.is_file() => {
-                    if let Ok(meta) = entry.metadata() {
-                        total += meta.len();
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    total
+    housekeeping::safe_tree_size(dir).unwrap_or(0)
 }
 
 /// Render a byte count as a short human-readable string.
 fn human_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit = 0;
-    while size >= 1024.0 && unit < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{size:.1} {}", UNITS[unit])
-    }
+    housekeeping::human_size(bytes)
 }

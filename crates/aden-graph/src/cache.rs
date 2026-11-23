@@ -3,7 +3,7 @@
 //! Disk cache for the Aden knowledge graph.
 //!
 //! Full-graph reads prefer the lock-free ADR-011 snapshot. Selective anchor and
-//! neighborhood reads use fjall's keyed documents/adjacency lists first so a
+//! neighborhood reads query SQLite's indexed tables/adjacency lists first so a
 //! small question does not deserialize an entire repository; they fall back to
 //! the snapshot when a concurrent writer makes the store unavailable.
 
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) mod symbols;
 
-/// Try loading the graph for read commands (ADR-011 snapshot-first, fjall fallback).
+/// Try loading the graph for read commands (ADR-011 snapshot-first, SQLite store fallback).
 pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
     let (store_path, is_legacy) = aden_paths::resolve_read_store(path);
     if is_legacy {
@@ -31,6 +31,7 @@ pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
     }
 
     if store_path.exists()
+        && !store_writer_is_active(&store_path)
         && let Ok(storage) = Storage::open_existing(store_path.to_str()?)
         && let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage)
         && !docs.is_empty()
@@ -259,11 +260,19 @@ pub fn resolve_anchor_from_list(anchor: &str, anchors: &[String]) -> AnchorResol
     analyze_anchor_list(anchor, anchors).resolution
 }
 
+fn store_writer_is_active(store_path: &Path) -> bool {
+    matches!(
+        aden_core::lock::inspect_lock(&aden_core::lock::store_lock_path(store_path)),
+        aden_core::lock::LockState::Active(_)
+    )
+}
+
 /// Resolve an exact anchor, module alias, or natural symbol name without loading
 /// the complete graph. Ambiguity is preserved rather than collapsed to missing.
 pub fn resolve_anchor_detailed(dir: &Path, anchor: &str) -> AnchorResolution {
     let (store_path, _) = aden_paths::resolve_read_store(dir);
-    if let Some(store_path) = store_path.to_str()
+    if !store_writer_is_active(&store_path)
+        && let Some(store_path) = store_path.to_str()
         && let Ok(storage) = Storage::open_existing(store_path)
         && let Some(resolution) = resolve_anchor_with_storage(&storage, anchor)
     {
@@ -341,6 +350,12 @@ impl<'a> GraphReadSession<'a> {
 
     fn open_store(dir: &Path) -> Result<Storage, String> {
         let (store_path, _) = aden_paths::resolve_read_store(dir);
+        if store_writer_is_active(&store_path) {
+            return Err(format!(
+                "store locked by active writer at {}",
+                aden_core::lock::store_lock_path(&store_path).display()
+            ));
+        }
         let path = store_path.to_str().ok_or("invalid store path")?;
         Storage::open_existing(path).map_err(|error| error.to_string())
     }
@@ -960,15 +975,23 @@ fn build_neighborhood_impl(
     caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
 ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
     let (store_path, _) = aden_paths::resolve_read_store(dir);
-    let store_path = store_path
-        .to_str()
-        .ok_or_else(|| crate::graph::GraphError::Io("invalid store path".into()))?;
+    let storage_result = if store_writer_is_active(&store_path) {
+        Err(format!(
+            "store locked by active writer at {}",
+            aden_core::lock::store_lock_path(&store_path).display()
+        ))
+    } else {
+        let store_path_str = store_path
+            .to_str()
+            .ok_or_else(|| crate::graph::GraphError::Io("invalid store path".into()))?;
+        Storage::open_existing(store_path_str).map_err(|e| e.to_string())
+    };
     // Selective traversal is why this function exists: read only adjacency
     // lists and documents reached from the seed. Snapshot-first behavior used
     // to deserialize every document and edge at kernel scale before discarding
-    // almost all of them. A concurrent writer can make fjall unavailable; in
-    // that case the immutable ADR-011 snapshot remains the lock-free fallback.
-    let storage = match Storage::open_existing(store_path) {
+    // almost all of them. When an active writer holds `store.lock`, fall back
+    // to the immutable ADR-011 snapshot rather than reading mid-gen state.
+    let storage = match storage_result {
         Ok(storage) => storage,
         Err(store_error) => {
             if let Some(data) = snapshot::try_read_fresh(dir) {
@@ -982,7 +1005,7 @@ fn build_neighborhood_impl(
                     caller_filter,
                 );
             }
-            return Err(crate::graph::GraphError::Io(store_error.to_string()));
+            return Err(crate::graph::GraphError::Io(store_error));
         }
     };
 
@@ -1068,11 +1091,7 @@ fn build_neighborhood_from_storage(
             if kept >= MAX_CALLERS {
                 break;
             }
-            let source_file = storage
-                .get_document(&src)
-                .ok()
-                .flatten()
-                .and_then(|d| d.attributes.get("source_file").cloned());
+            let source_file = storage.get_source_file(&src).ok().flatten();
             if !caller_filter(&src, source_file.as_deref()) {
                 continue;
             }

@@ -22,27 +22,27 @@ use crate::util::{
     normalize_sep, sanitize_source_file, save_gen_cache,
 };
 
-const COALESCED_DOC_BATCH_LIMIT: usize = 512;
+const COALESCED_DOC_BATCH_LIMIT: usize = 4096;
 
 #[derive(Default)]
 struct CoalescedDocBatch {
-    docs: Vec<(aden_core::Document, String)>,
+    docs: Vec<aden_core::Document>,
     index: std::collections::HashMap<String, usize>,
 }
 
 impl CoalescedDocBatch {
-    fn push(&mut self, item: (aden_core::Document, String)) {
-        if let Some(&index) = self.index.get(&item.0.anchor) {
+    fn push(&mut self, item: aden_core::Document) {
+        if let Some(&index) = self.index.get(&item.anchor) {
             self.docs[index] = item;
         } else {
-            self.index.insert(item.0.anchor.clone(), self.docs.len());
+            self.index.insert(item.anchor.clone(), self.docs.len());
             self.docs.push(item);
         }
     }
 
     fn flush(&mut self, storage: &impl GraphStorage) -> Result<(), aden_store::StoreError> {
         if !self.docs.is_empty() {
-            storage.put_documents_bulk(&self.docs)?;
+            storage.put_documents_bulk_canonical(&self.docs)?;
             self.docs.clear();
             self.index.clear();
         }
@@ -122,15 +122,14 @@ enum WorkItem {
         source_path: String,
         source_digest: String,
         symbols: Vec<EmittedSymbol>,
-        /// Slimmed documents to write to the store, each paired with its base
-        /// snapshot (the lossless `emit_contract_document` text, emitted here in
-        /// the parallel pass so the serial writer stays pure I/O). Carried out
+        /// Slimmed documents to write to the store (their canonical merge base
+        /// is derived lazily from the stored document on read/CoW). Carried out
         /// of the parallel pass so the actual write happens *sequentially in
         /// sorted source order* in Phase 2 — otherwise two files sharing a
         /// basename anchor (e.g. `openapi2/helpers.go` + `openapi3/helpers.go` →
         /// `helpers.go#copyURI`) race, and the collision winner (hence the
         /// index) is non-deterministic. Empty on a `--propose` dry-run.
-        docs: Vec<(aden_core::Document, String)>,
+        docs: Vec<aden_core::Document>,
         /// Anchors whose freshly-generated content collided with durable
         /// `[human]`/`[agent]` overlay intent. Surfaced as proposals; the
         /// stored document is left untouched for these.
@@ -459,7 +458,7 @@ fn cmd_gen_inner(
             }
             Err(aden_store::StoreError::IncompatibleVersion(_)) => {
                 // The on-disk store was written in an engine format this build
-                // cannot read (e.g. a fjall major upgrade). The store is a
+                // cannot read (e.g. a legacy Fjall store or schema upgrade). The store is a
                 // rebuildable cache (ADR-003), so wipe it and rebuild from
                 // source. Scoped strictly to this signal — a generic Io error
                 // falls through to the hard-failure arm below and never wipes.
@@ -674,6 +673,12 @@ fn cmd_gen_inner(
         let mut peak_batch_snapshot_bytes = 0;
         let mut peak_batch_documents = 0;
         let batch_limits = bounded::limits();
+        let mut coalesced = CoalescedDocBatch::default();
+        #[cfg(debug_assertions)]
+        let per_file = std::env::var_os("ADEN_TEST_FAIL_AFTER_FILE_WRITE").is_some()
+            || std::env::var_os("ADEN_TEST_HOLD_AFTER_FILE_WRITE").is_some();
+        #[cfg(not(debug_assertions))]
+        let per_file = false;
         while batch_start < sources.len() {
             let (batch_len, batch_bytes) = bounded::batch_len_with_limits(
                 sources[batch_start..].iter().map(|source| {
@@ -836,7 +841,7 @@ fn cmd_gen_inner(
                     // deterministically instead of racing across worker threads.
                     let mut emitted = Vec::new();
                     let mut conflicts: Vec<(String, aden_core::contract::MergeProposal)> = Vec::new();
-                    let mut docs_local: Vec<(aden_core::Document, String)> = Vec::new();
+                    let mut docs_local: Vec<aden_core::Document> = Vec::new();
                     for mut doc in docs {
                         sanitize_source_file(&mut doc, &root);
 
@@ -924,17 +929,11 @@ fn cmd_gen_inner(
                             wrote: write,
                         });
                         // Defer the write — Phase 2 stores these in sorted source
-                        // order. Emit the base snapshot HERE (in the parallel pass),
-                        // not in the serial writer: it is the lossless
-                        // `emit_contract_document` text for this exact slimmed doc
-                        // (`parse_contract` is its inverse), so computing it
-                        // per-worker keeps Phase 2's single-threaded write loop to
-                        // pure I/O.
+                        // order. Canonical merge bases are tracked via the compact
+                        // `has_canonical_base` flag rather than storing redundant
+                        // contract copies on disk.
                         if write {
-                            let snapshot = aden_emit::emit_contract_document(
-                                &aden_core::contract::ContractDocument::from_document(&doc),
-                            );
-                            docs_local.push((doc, snapshot));
+                            docs_local.push(doc);
                         }
                     }
 
@@ -954,10 +953,18 @@ fn cmd_gen_inner(
 
             let mut batch_snapshot_bytes = 0;
             let mut batch_documents = 0;
+            let trace_enabled = trace.is_enabled();
             for item in &work_items {
                 if let WorkItem::Reindexed { docs, .. } = item {
                     batch_documents += docs.len();
-                    batch_snapshot_bytes += docs.iter().map(|(_, text)| text.len()).sum::<usize>();
+                    if trace_enabled {
+                        batch_snapshot_bytes += docs
+                            .iter()
+                            .map(|doc| {
+                                aden_store::serialize_document(doc).map_or(0, |bytes| bytes.len())
+                            })
+                            .sum::<usize>();
+                    }
                 }
             }
             peak_batch_documents = peak_batch_documents.max(batch_documents);
@@ -994,12 +1001,6 @@ fn cmd_gen_inner(
                     recovery_journal_dirty = false;
                 }
             }
-            let mut coalesced = CoalescedDocBatch::default();
-            #[cfg(debug_assertions)]
-            let per_file = std::env::var_os("ADEN_TEST_FAIL_AFTER_FILE_WRITE").is_some()
-                || std::env::var_os("ADEN_TEST_HOLD_AFTER_FILE_WRITE").is_some();
-            #[cfg(not(debug_assertions))]
-            let per_file = false;
             for (completed, item) in work_items.into_iter().enumerate() {
                 super::generation_job::checkpoint(
                     "persist_prune",
@@ -1041,14 +1042,14 @@ fn cmd_gen_inner(
                     } => {
                         trace.increment("reindexed_files");
                         if per_file {
-                            storage.put_documents_bulk(&docs).map_err(|e| {
+                            storage.put_documents_bulk_canonical(&docs).map_err(|e| {
                                 format!("Failed to store documents for {source_path}: {e}")
                             })?;
                         } else if docs.len() >= COALESCED_DOC_BATCH_LIMIT {
                             // Keep large single-file stores atomic instead of splitting one file
                             // across multiple partial WAL commits.
                             coalesced.flush(&storage)?;
-                            storage.put_documents_bulk(&docs).map_err(|e| {
+                            storage.put_documents_bulk_canonical(&docs).map_err(|e| {
                                 format!("Failed to store documents for {source_path}: {e}")
                             })?;
                         } else {
@@ -1165,9 +1166,9 @@ fn cmd_gen_inner(
                 }
             }
 
-            coalesced.flush(&storage)?;
             batch_start += batch_len;
         }
+        coalesced.flush(&storage)?;
         trace.count("parse_batches", batch_count);
         trace.count("peak_parse_batch_files", peak_batch_files);
         trace.count("peak_parse_batch_source_bytes", peak_batch_bytes as usize);
@@ -1324,10 +1325,34 @@ fn cmd_gen_inner(
         }
 
         // Every document write, stale-node prune, and synthesized hub write is
-        // now complete. Publish the marker last, then durably flush both graph
-        // and lexicon before preparing a snapshot that may reference them.
+        // now complete. Synchronize discovered file metadata into SQLite `files`,
+        // publish the lexicon marker last, and durably flush before preparing a
+        // snapshot.
         super::generation_job::checkpoint("store_flush", None, None)?;
         trace.stage("store_flush");
+        let mut file_records = Vec::with_capacity(cache.entries.len() + cache.dispositions.len());
+        for (rel_path, entry) in &cache.entries {
+            file_records.push(aden_store::FileRecord {
+                rel_path: rel_path.clone(),
+                mtime: Some(entry.source_mtime),
+                digest: (!entry.source_digest.is_empty()).then(|| entry.source_digest.clone()),
+                disposition: Some("indexed".to_string()),
+            });
+        }
+        for (rel_path, entry) in &cache.dispositions {
+            if cache.entries.contains_key(rel_path) {
+                continue;
+            }
+            file_records.push(aden_store::FileRecord {
+                rel_path: rel_path.clone(),
+                mtime: Some(entry.source_mtime),
+                digest: None,
+                disposition: Some(format!("{:?}", entry.disposition)),
+            });
+        }
+        storage
+            .sync_file_records(&file_records)
+            .map_err(|e| format!("Failed to sync file metadata: {e}"))?;
         storage
             .finalize_symbol_lexicon()
             .map_err(|e| format!("Failed to finalize symbol lexicon: {e}"))?;
@@ -1358,8 +1383,8 @@ fn cmd_gen_inner(
         drop(cochange);
 
         // ADR-011: serialize the read snapshot to its temporary file while
-        // storage is open; publish after the store handle drops so a final fjall
-        // flush cannot age the store past the snapshot file.
+        // storage is open; publish after the store handle drops so a final store
+        // checkpoint/flush cannot age the store past the snapshot file.
         super::generation_job::checkpoint("snapshot_prepare", None, None)?;
         trace.stage("snapshot_prepare");
         let snapshot_path = aden_paths::graph_snapshot_file(&root);
@@ -1493,6 +1518,12 @@ fn cmd_gen_inner(
     journal.clear_recovery()?;
     drop(writer_lease);
     trace.finish();
+    if !propose {
+        crate::commands::store::housekeeping::maybe_run_automatic_housekeeping(
+            aden_paths::try_project_dir(&root).ok().as_deref(),
+            silent,
+        );
+    }
     Ok(())
 }
 
@@ -1536,16 +1567,23 @@ mod store_lock_tests {
 #[cfg(test)]
 mod coalesced_doc_tests {
     use super::*;
-    fn doc(anchor: &str) -> aden_core::Document {
+    fn doc(anchor: &str, tag: &str) -> aden_core::Document {
+        let mut attributes = std::collections::HashMap::new();
+        attributes.insert("source_hash".into(), tag.into());
         aden_core::Document {
             anchor: anchor.into(),
             node_type: aden_core::NodeType::Note,
-            attributes: Default::default(),
+            attributes,
             blocks: vec![],
             source_span: None,
             metadata: None,
             confidence: 1.0,
         }
+    }
+    fn expected_base(doc: &aden_core::Document) -> String {
+        aden_emit::emit_contract_document(&aden_core::contract::ContractDocument::from_document(
+            doc,
+        ))
     }
     #[test]
     fn collision_and_flush_across_chunk_boundaries() {
@@ -1553,23 +1591,45 @@ mod coalesced_doc_tests {
         let _ = std::fs::remove_dir_all(&path);
         let storage = Storage::new(&path.to_string_lossy()).unwrap();
         let mut batch = CoalescedDocBatch::default();
-        batch.push((doc("same"), "first".into()));
-        batch.push((doc("same"), "last".into()));
+        batch.push(doc("same", "first"));
+        let last = doc("same", "last");
+        batch.push(last.clone());
         assert_eq!(batch.docs.len(), 1);
         for i in 1..COALESCED_DOC_BATCH_LIMIT {
-            batch.push((doc(&format!("n{i}")), "base".into()));
+            batch.push(doc(&format!("n{i}"), "base"));
         }
         batch.flush(&storage).unwrap();
         assert!(batch.docs.is_empty() && batch.index.is_empty());
         assert_eq!(
-            storage.get_base_snapshot("same").unwrap().as_deref(),
+            storage
+                .get_document("same")
+                .unwrap()
+                .unwrap()
+                .attributes
+                .get("source_hash")
+                .map(String::as_str),
             Some("last")
         );
-        batch.push((doc("same"), "later chunk".into()));
-        batch.flush(&storage).unwrap();
         assert_eq!(
             storage.get_base_snapshot("same").unwrap().as_deref(),
+            Some(expected_base(&last).as_str())
+        );
+        let later = doc("same", "later chunk");
+        batch.push(later.clone());
+        batch.flush(&storage).unwrap();
+        assert_eq!(
+            storage
+                .get_document("same")
+                .unwrap()
+                .unwrap()
+                .attributes
+                .get("source_hash")
+                .map(String::as_str),
             Some("later chunk")
+        );
+        assert_eq!(
+            storage.get_base_snapshot("same").unwrap().as_deref(),
+            Some(expected_base(&later).as_str())
         );
         drop(storage);
         std::fs::remove_dir_all(path).ok();

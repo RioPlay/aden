@@ -790,7 +790,7 @@ fn is_plain_ident(s: &str) -> bool {
 /// of that method ON THE CALLER'S OWN ENCLOSING TYPE, preserving the language's
 /// member separator so it matches how the type's methods are stored:
 /// `…#Command.main` + `invoke` → `Command.invoke` (Python `.`),
-/// `…#FjallStorage::open` + `flush` → `FjallStorage::flush` (Rust `::`).
+/// `…#SqliteStorage::open` + `flush` → `SqliteStorage::flush` (Rust `::`).
 /// Returns `None` when the caller symbol is not itself a method (a free function
 /// has no enclosing type, so `self` could not appear anyway).
 fn enclosing_qualified(caller: &str, method: &str) -> Option<String> {
@@ -1346,6 +1346,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
     // by definition). Deliberately NOT in `impact_edge_types`: co-change is
     // advisory association, not structural dependency, and must never
     // inflate a blast radius.
+    let mut synthesized_docs: Vec<Document> = Vec::new();
     let mut synthesized_files: HashSet<String> = HashSet::new();
     for ((a, fa), (b, fb)) in cochange_pairs {
         for (anchor, file) in [(a, fa), (b, fb)] {
@@ -1354,7 +1355,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
                 if !file.is_empty() {
                     attrs.insert("source_file".to_string(), file.clone());
                 }
-                let _ = storage.put_document(&Document {
+                synthesized_docs.push(Document {
                     anchor: anchor.clone(),
                     node_type: NodeType::Module,
                     attributes: attrs,
@@ -1391,7 +1392,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
         };
         let project = "mod-project";
         if !anchors.contains(project) {
-            let _ = storage.put_document(&make_module_doc(
+            synthesized_docs.push(make_module_doc(
                 project,
                 "Project root. Links to every crate/module in the project.",
             ));
@@ -1399,7 +1400,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
         for module in &modules {
             let module_anchor = format!("mod-{}", module);
             if !anchors.contains(&module_anchor) {
-                let _ = storage.put_document(&make_module_doc(
+                synthesized_docs.push(make_module_doc(
                     &module_anchor,
                     &format!(
                         "Module {}. Contains the symbols extracted from its source.",
@@ -1414,6 +1415,10 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
             ));
             edges.push((module_anchor, project.to_string(), EdgeType::PartOf));
         }
+    }
+
+    if !synthesized_docs.is_empty() {
+        let _ = storage.put_documents_bulk_canonical(&synthesized_docs);
     }
 
     storage.put_edges_bulk(&edges)?;
@@ -1556,8 +1561,8 @@ mod link_tests {
         );
         // Rust path-methods.
         assert_eq!(
-            enclosing_qualified("aden://module/c/s.rs#FjallStorage::open", "flush"),
-            Some("FjallStorage::flush".to_string())
+            enclosing_qualified("aden://module/c/s.rs#SqliteStorage::open", "flush"),
+            Some("SqliteStorage::flush".to_string())
         );
         // A free function has no enclosing type → None (self can't appear).
         assert_eq!(

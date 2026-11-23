@@ -9,6 +9,15 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Automatic store housekeeping & enhanced `aden store prune` (`aden-cli`)** — Post-`gen` housekeeping now sweeps orphaned project directories, unreadable legacy `fjall` (`FJL\x02`/`FJL\x03`) stores, and abandoned empty `no_meta` shells at most once every 24h (`housekeeping.stamp`, `ADEN_SKIP_HOUSEKEEPING` opt-out) with grace windows, active-lock checks, and symlink/junction refusal; `aden store prune` adds `--orphans-only`, `--stale-days <DAYS>`, and `--json` while `aden store list` surfaces store format tags (`[sqlite]`, `[legacy:FJL3]`, `[empty]`).
+
+### Changed
+
+- **SQLite WAL storage backend & consolidated ERD (`aden-store`, `aden gen`)** — Replaced the embedded `fjall` LSM-tree backend with `rusqlite` (`0.43`, bundled SQLite 3 in WAL mode) + pure-Rust `lz4_flex` Postcard blob compression and a normalized 7-table schema (`files`, `nodes`, `node_bodies`, `bases`, `edges`, `symbol_exact`, `meta`, `ADNS\x01` format marker). Canonical merge bases are now reconstructed lazily with copy-on-write preservation (zero eager rows in `bases`), enabling lock-free concurrent multi-process reads, sub-millisecond cold opens, dramatically smaller on-disk stores, and automatic ADR-009 rebuild from prior `fjall` stores.
+- **Lean CI workflows (`.github/workflows/ci.yml`, `.github/workflows/quality.yml`)** — Consolidated Linux workspace verification into `Build shipped binaries`, narrowed cross-OS runners (`macos-15`, `windows-2025`) to OS/path/process contracts, gated `rustup` stable and unchanged `editors/vscode` checks off redundant PR runs, enabled PR concurrency cancellation, and switched `cargo-deny` to a SHA-256-verified prebuilt release archive.
+
 ### Fixed
 
 - **Credential scanning (`aden-core`, `aden gen`)** — Require realistic secret token formats in content filtering, ignore common TypeScript identifiers and placeholder literals, and log the triggering rule name and 1-based line number when skipping a file.

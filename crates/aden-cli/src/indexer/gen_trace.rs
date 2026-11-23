@@ -50,6 +50,10 @@ impl GenTrace {
         )
     }
 
+    pub(super) fn is_enabled(&self) -> bool {
+        self.0.is_some()
+    }
+
     pub(super) fn stage(&mut self, stage: &'static str) {
         if let Some(trace) = self.0.as_mut() {
             let now = Instant::now();
