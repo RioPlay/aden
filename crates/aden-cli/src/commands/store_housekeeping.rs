@@ -581,26 +581,27 @@ mod tests {
                     .open(&p)
             };
             #[cfg(not(windows))]
-            let opened = fs::File::options().write(true).open(&p);
-            if let Ok(f) = opened {
-                let _ = f.set_times(times);
-            }
+            let opened = fs::File::open(&p);
+            let f = opened.unwrap_or_else(|e| panic!("open {}: {e}", p.display()));
+            f.set_times(times)
+                .unwrap_or_else(|e| panic!("set_times {}: {e}", p.display()));
         }
     }
 
     #[test]
     fn automatic_policy_respects_grace_windows_and_reclaims_aged_entries() {
         let temp = tempfile::tempdir().unwrap();
-        let projects = temp.path().join("projects");
+        let base = aden_paths::strip_verbatim(&temp.path().canonicalize().unwrap());
+        let projects = base.join("projects");
         fs::create_dir_all(&projects).unwrap();
 
         let fresh_orphan = projects.join("fresh_orphan");
-        write_meta(&fresh_orphan, &temp.path().join("missing-a"));
+        write_meta(&fresh_orphan, &base.join("missing-a"));
         fs::create_dir_all(fresh_orphan.join("store")).unwrap();
         fs::write(fresh_orphan.join("store/version"), b"ADNS\x01").unwrap();
 
         let fresh_legacy = projects.join("fresh_legacy");
-        let live_root = temp.path().join("live-root");
+        let live_root = base.join("live-root");
         fs::create_dir_all(&live_root).unwrap();
         write_meta(&fresh_legacy, &live_root);
         fs::create_dir_all(fresh_legacy.join("store")).unwrap();
@@ -628,8 +629,9 @@ mod tests {
     #[test]
     fn unknown_and_future_store_markers_are_never_treated_as_legacy() {
         let temp = tempfile::tempdir().unwrap();
-        let projects = temp.path().join("projects");
-        let live_root = temp.path().join("live-root");
+        let base = aden_paths::strip_verbatim(&temp.path().canonicalize().unwrap());
+        let projects = base.join("projects");
+        let live_root = base.join("live-root");
         fs::create_dir_all(&live_root).unwrap();
 
         let future = projects.join("future_store");
